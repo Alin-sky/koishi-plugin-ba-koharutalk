@@ -156,6 +156,37 @@ export async function apply(ctx: Context, config: Config) {
         return favor
     }
 
+    //头像创建函数
+    async function create_Avatar_creation(url: string, stu_name: string) {
+        const avatar_hi = 500 * A
+        const avatar_wi = 2600 * A
+        const fontsize = 160 * A
+        //使用loadImage()加载图像
+        const img_data = await ctx.canvas.loadImage(url)
+        //先创建个常量，使用createCanvan确定画布大小
+        const canvas = await ctx.canvas.createCanvas(avatar_wi, avatar_hi)
+        //再创建个常量，使用getContext('2d')，转成2d？
+        const ctx_a = canvas.getContext('2d')
+        //然后可以在这个常量的基础上使用api
+        ctx_a.fillStyle = color_di;
+        ctx_a.fillRect(0, 0, avatar_wi, avatar_hi);
+        ctx_a.save();
+        // 创建一个圆形的路径
+        ctx_a.beginPath();
+        ctx_a.arc(250 * A, 250 * A, 240 * A, 0, Math.PI * 2);
+        // 创建剪切区域
+        ctx_a.clip();
+        // 在圆形区域内绘制图片
+        ctx_a.drawImage(img_data, 0, 0, 500 * A, 560 * A)
+        ctx_a.restore();
+        ctx_a.fillStyle = '#000000'
+        ctx_a.font = `bold ${fontsize}px ${fonts}`
+        ctx_a.fillText(stu_name, 540 * A, 200 * A)
+        //转成buffer对象即可储存
+        const buffer_ava = await canvas.toBuffer('image/png')
+        await fs.writeFile(`${root}/${stu_name}.png`, buffer_ava)
+    }
+
 
 
 
