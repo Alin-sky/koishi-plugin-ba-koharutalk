@@ -182,10 +182,143 @@ export async function apply(ctx: Context, config: Config) {
         ctx_a.fillStyle = '#000000'
         ctx_a.font = `bold ${fontsize}px ${fonts}`
         ctx_a.fillText(stu_name, 540 * A, 200 * A)
-        //转成buffer对象即可储存
-        const buffer_ava = await canvas.toBuffer('image/png')
-        await fs.writeFile(`${root}/${stu_name}.png`, buffer_ava)
+        return canvas
     }
+
+
+
+    //对话框创建函数
+    var N: number = 0
+    var wid_dialog: number = 0
+    async function create_dialog_box(text: string, color: string, random: number) {
+        N = 0
+        wid_dialog = 0
+        // 字体大小
+        const fontSize = 150 * A;
+        // 行高
+        const lineHeight = 200 * A;
+        // 每行最大字符数
+        const maxLineLength = 30;
+        // 基底高度
+        let baseHeight = 80 * A;
+        // 基底宽度
+        let baseWidth = 300 * A;
+        // 弧度
+        let rad = 60 * A;
+        // 切割文本为多行
+        //内置文本切割函数
+        function splitText(text, maxLineWidth) {
+            let lines = [];
+            let currentLine = '';
+            let currentLineWidth = 0;
+            for (let char of text) {
+                // 判断字符是全角还是半角
+                let charWidth = /[\u0391-\uFFE5]/.test(char) ? 2 : 1;
+                if (currentLineWidth + charWidth > maxLineWidth) {
+                    N++
+                    lines.push(currentLine);
+                    currentLine = char;
+                    currentLineWidth = charWidth;
+                } else {
+                    currentLine += char;
+                    currentLineWidth += charWidth;
+                }
+            }
+            if (currentLine) {
+                lines.push(currentLine);
+            }
+            return lines;
+        }
+        let lines = splitText(text, maxLineLength);
+        // 根据行数动态调整高度
+        baseHeight += lines.length * lineHeight;
+        // 创建一个临时的canvas来获取最长行的宽度
+        let tempCanvas = await ctx.canvas.createCanvas(1, 1);
+        let tempContext = tempCanvas.getContext('2d');
+        tempContext.font = `${fontSize}px sans-serif`;
+        // 获取最长行的宽度
+        let longestLineWidth = lines.reduce((maxWidth, line) => {
+            let lineWidth = tempContext.measureText(line).width;
+            return lineWidth > maxWidth ? lineWidth : maxWidth;
+        }, 0);
+        // 使用最长行的宽度作为基础宽度
+        baseWidth = (longestLineWidth + rad * 2);  // 加上左右两边的弧度
+        wid_dialog = baseWidth
+        // 创建实际的canvas
+        const canvas = await ctx.canvas.createCanvas(baseWidth, baseHeight);
+        const context = canvas.getContext('2d');
+        // 绘制圆角矩形
+        context.beginPath();
+        context.moveTo(rad, 0);
+        context.arcTo(baseWidth, 0, baseWidth, baseHeight, rad);
+        context.arcTo(baseWidth, baseHeight, 0, baseHeight, rad);
+        context.arcTo(0, baseHeight, 0, 0, rad);
+        context.arcTo(0, 0, baseWidth, 0, rad);
+        context.closePath();
+        // 填充颜色
+        context.fillStyle = color;
+        context.fill();
+        // 设置文本属性
+        context.font = `bold ${fontSize}px ${fonts}`;
+        context.fillStyle = '#FFFFFF';
+        // 绘制文本
+        for (let i = 0; i < lines.length; i++) {
+            context.fillText(lines[i], rad - (20 * A), rad + (i * lineHeight) + (120 * A))
+        }
+        const buffer = await canvas.toBuffer('image/png');
+        const filename = text.substring(0, 10);
+        await fs.writeFile(root + '/' + random + '_' + filename + '.png', buffer);
+    }
+
+
+
+    // 圆角图片生成函数
+    var img_1_height: number = 0;
+    async function create_user_Image(imagePath: string, imageName: string): Promise<void> {
+        img_1_height = 0
+        // 加载本地图片
+        const image = await ctx.canvas.loadImage(imagePath);
+        // 使用类型断言
+        const img = image as unknown as { width: number, height: number };
+
+        // 固定画布宽度
+        const canvasWidth = 1500 * A;
+        // 根据固定宽度计算高度，以保持图片宽高比
+        const scale = canvasWidth / img.width;
+        const canvasHeight = img.height * scale;
+        img_1_height = canvasHeight;
+
+        // 创建画布
+        const canvas = await ctx.canvas.createCanvas(canvasWidth, canvasHeight);
+        const ctxs = canvas.getContext('2d');
+
+        // 绘制圆角矩形路径
+        const cornerRadius = 100 * A;
+        ctxs.beginPath();
+        ctxs.moveTo(cornerRadius, 0);
+        ctxs.lineTo(canvasWidth - cornerRadius, 0);
+        ctxs.quadraticCurveTo(canvasWidth, 0, canvasWidth, cornerRadius);
+        ctxs.lineTo(canvasWidth, canvasHeight - cornerRadius);
+        ctxs.quadraticCurveTo(canvasWidth, canvasHeight, canvasWidth - cornerRadius, canvasHeight);
+        ctxs.lineTo(cornerRadius, canvasHeight);
+        ctxs.quadraticCurveTo(0, canvasHeight, 0, canvasHeight - cornerRadius);
+        ctxs.lineTo(0, cornerRadius);
+        ctxs.quadraticCurveTo(0, 0, cornerRadius, 0);
+        ctxs.closePath();
+
+        // 剪切圆角矩形区域
+        ctxs.clip();
+
+        // 在圆角矩形内绘制图片
+        ctxs.drawImage(image, 0, 0, canvasWidth, canvasHeight);
+
+        // 将画布内容保存为 PNG 格式，并覆盖原始图片
+        const buffer = await canvas.toBuffer('image/png');
+        const pathname = imageName.substring(0, 10);
+        await fs.writeFile(root + '/' + pathname + '.png', buffer);
+
+    }
+
 
 
 
