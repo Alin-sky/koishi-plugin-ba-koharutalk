@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-ba-koharu-talk",
-  "description": "",
-  "version": "0.0.1",
+  "description": "通过bot来生成类似碧蓝档案momotalk的对话图",
+  "version": "0.3.0-alpha0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -15,6 +15,21 @@
     "plugin"
   ],
   "peerDependencies": {
-    "koishi": "^4.17.4"
+    "koishi": "^4.17.0"
+  },
+  "dependencies": {
+    "zh_cn": "^0.0.7"
+  },
+  "devDependencies": {
+    "zh_cn": "^0.0.7"
+  },
+  "service": {
+    "required": [
+      "canvas"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alin-sky/koishi-plugin-ba-koharutalk"
   }
 }
