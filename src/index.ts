@@ -350,9 +350,15 @@ export async function apply(ctx: Context, config: Config) {
           if (stuname.length == 0) {
 
           } else {
-            let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
-            stuname[0] = json_data.find(i => i.Id == stuname[0])?.Name_zh_ft;
-            avaimg_url = `${drawm}${root}/${stuid}.png`
+            if (Object.keys(options).length != 0) {
+              let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
+              stuname[0] = options['nikc name']
+              avaimg_url = `${drawm}${root}/${stuid}.png`
+            } else {
+              let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
+              stuname[0] = json_data.find(i => i.Id == stuname[0])?.Name_zh_ft;
+              avaimg_url = `${drawm}${root}/${stuid}.png`
+            }
           }
         } else {
           if (Object.keys(options).length == 0) {
@@ -380,7 +386,7 @@ export async function apply(ctx: Context, config: Config) {
             c.drawImage(image_bubb, 630 * A, y1)
             let heis = config.draw_modle ? 'height' : 'naturalHeight'
             y1 += (image_bubb[heis] + (20 * A))
-            
+
           } else if (0) {
 
           } else {
@@ -400,7 +406,11 @@ export async function apply(ctx: Context, config: Config) {
     })
 
 
+  ctx.command('talk/talkimg<message:image>')
+    .alias('image')
+    .action(async ({ session }, message) => {
 
+    })
 
 
 
