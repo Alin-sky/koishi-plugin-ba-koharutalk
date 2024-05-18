@@ -1,1081 +1,907 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.apply = exports.Config = exports.usage = exports.name = void 0;
-const jsx_runtime_1 = require("@satorijs/element/jsx-runtime");
+exports.apply = exports.json_file_name = exports.Config = exports.usage = exports.name = exports.inject = void 0;
 const koishi_1 = require("koishi");
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
-const url_1 = require("url");
-const path_2 = require("path");
-const canvas_1 = require("canvas");
-const match_1 = require("./sanae_match_system/match");
-const promises_1 = require("fs/promises");
+const match_mmt_1 = require("./sanae_match_system/match_mmt");
+const FMPS_F_1 = require("./FMPS/FMPS_F");
+const FMPS_1 = require("./FMPS/FMPS");
+exports.inject = { required: ['canvas'] };
+//export const using = ['canvas']
 exports.name = 'ba-koharu-talk';
-exports.usage = ' 已知问题：\n' +
-    '渲染指令来回切换老师和学生会出问题，是数字和索引问题，需要抽空重构或修复\n' +
-    '写文指令好像有几个bug\n' +
-    '图片太长会报错\n' +
-    '先用罢呜呜';
+exports.usage = `
+<div style="font-size:30px; font-weight:bold;">
+<span style="color: #FFD2ED;">koharu</span>-talk
+<div style="border:1px solid #CCC"></div> 
+
+<h6>0.3.0-aplha</h6>
+<h6>日志出现报错可尝试重启插件</h6>
+<h6>指令没加载出来可尝试重启commands插件</h6>
+`;
 exports.Config = koishi_1.Schema.object({
-    reminders: koishi_1.Schema.number().role('slider')
-        .min(1).max(30).step(1).default(10).description('自动保存次数'),
+    auto_update: koishi_1.Schema.boolean().required().description('### 是否每次重启都下载资源'),
     font: koishi_1.Schema.string().default('YouYuan').description('字体设置（beta）'),
+    resolution: koishi_1.Schema.union([
+        koishi_1.Schema.const(0.25).description('x 0.25'),
+        koishi_1.Schema.const(0.5).description('x 0.5'),
+        koishi_1.Schema.const(1).description('x 1'),
+    ]).role('radio').required().description('分辨率设置'),
+    draw_modle: koishi_1.Schema.union([
+        koishi_1.Schema.const('canvas').description('canvas'),
+        koishi_1.Schema.const('puppeteer').description('puppeteer'),
+    ]).description('选择渲染方法').role('radio').required(),
+    input_time: koishi_1.Schema.number().default(60000).description('等待输入时间'),
+    returns: koishi_1.Schema.string().default('输入内容可能有问题(◎﹏◎)').description('不合规的回复内容'),
+    process: koishi_1.Schema.object({
+        id: koishi_1.Schema.string().description('APP ID'),
+        APIKey: koishi_1.Schema.string().description('API Key').role('secret'),
+        SKey: koishi_1.Schema.string().description('Secret Key').role('secret')
+    }).description('百度审核(缺省则不启用)'),
 });
-function apply(ctx, config) {
+exports.json_file_name = 'sms_studata_main.json';
+async function apply(ctx, config) {
+    //字体读取
     const fonts = config.font;
-    // 创建文件夹的函数
-    const color_di = '#FFEFF4';
+    //分辨率倍率
+    const A = (config.resolution);
+    const baiduapi = "https://aip.baidubce.com/rest/2.0/solution/v1/text_censor/v2/user_defined";
+    const baidu_token_url = 'https://aip.baidubce.com/oauth/2.0/token';
+    const cos1 = 'https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/';
+    const qqavaurl = 'https://api.qqsuu.cn/api/dm-qt?qq=';
+    const id = config.process.id;
+    const apikey = config.process.APIKey;
+    const skey = config.process.SKey;
+    const drawm = config.draw_modle == "canvas" ? "" : 'file://';
+    const violate_text = config.returns;
+    const inp_time = config.input_time;
+    const color_di = '#FFEFF4'; //全局背景色
     const log1 = "koharu-talk";
     const logger = new koishi_1.Logger(log1);
-    const { createCanvas } = require('canvas');
-    const url_db = "https://schale.gg/images/student/collection/";
-    const url_alinclude = "http://124.221.99.85:8088";
-    const random = new koishi_1.Random(() => Math.random()); //乱整个随机数防止重名
-    function createDir(dirPath) {
-        return new Promise((resolve, reject) => {
-            fs_1.default.mkdir(dirPath, { recursive: true }, (err) => {
-                if (err) {
-                    reject(err);
+    const fmp = new FMPS_1.FMPS(ctx);
+    const random = new koishi_1.Random(() => Math.random());
+    const root = await (0, FMPS_F_1.rootF)("mmt_img");
+    var token = '';
+    //审核配置
+    async function tokens() {
+        const grant = 'grant_type=client_credentials';
+        const tokenurl = `${baidu_token_url}?${grant}&client_id=${apikey}&client_secret=${skey}`;
+        try {
+            const out1 = await ctx.http.get(tokenurl);
+            console.log(out1.access_token);
+            token = out1.access_token;
+            return token;
+        }
+        catch (error) {
+            logger.info(error);
+            return false;
+        }
+    }
+    let process = false;
+    if (apikey == null || skey == null || id == null) {
+        logger.info('⛔ 审核配置填写不完整，已停用');
+        process = false;
+    }
+    else {
+        if (await tokens() == false) {
+            logger.info('⛔ 审核配置填写可能有误，已停用');
+        }
+        else {
+            logger.info('🟢 已启用百度审核');
+            process = true;
+        }
+    }
+    async function process_baidu(text) {
+        const accessToken = token;
+        const urls = `${baiduapi}?access_token=${accessToken}`;
+        const configs = {
+            headers: {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+        };
+        // 使用 URLSearchParams 格式化数据
+        const data = new URLSearchParams();
+        data.append('text', text);
+        const post = await ctx.http.post(urls, data, configs);
+        console.log(await post);
+        if (post.conclusion == '不合规') {
+            logger.info('内容不合规');
+            logger.info(post);
+        }
+        return post.conclusion;
+    }
+    async function initia() {
+        logger.info("🟡 正在更新json文件");
+        const hashurl = 'https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/hash.json';
+        const jsonurl = "https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/json%2F";
+        const newhash = await ctx.http.get(hashurl);
+        const oldjson = await fmp.json_parse(root + "/hash.json");
+        if (!oldjson) {
+            await fmp.file_download(hashurl, root, 'hash.json');
+        }
+        function arraysEqual(a, b) {
+            if (a.length !== b.length)
+                return false;
+            for (let i = 0; i < a.length; i++) {
+                if (Object.keys(a[i]).length !== Object.keys(b[i]).length)
+                    return false;
+                for (let key in a[i]) {
+                    if (a[i][key] !== b[i][key])
+                        return false;
+                }
+            }
+            return true;
+        }
+        if (!arraysEqual(newhash, oldjson)) {
+            logger.info("☁️🆕🟡云hash更新");
+            const stu_data = await fmp.json_parse(`${root}/sms_studata_toaro_stu.json`);
+            if (!await (0, FMPS_F_1.file_search)(`${root}/${stu_data[stu_data.length - 1].Id_db}.png`)) {
+                await init_download();
+            }
+        }
+        else {
+            logger.info("☁️   🟢云hash未更新");
+            //二次检测
+            for (let i = 0; i < newhash.length; i++) {
+                const jsons = await fmp.json_parse(`${root}/${oldjson[i].fname}`);
+                if (jsons == null) {
+                    await fmp.file_download((`${jsonurl}${newhash[i].fname}`), root, `${newhash[i].fname}`);
+                }
+            }
+            if (config.auto_update) {
+                logger.info("🟡本地资源随机更新");
+                await init_download();
+            }
+            return;
+        }
+        for (let i = 1; i < 4; i++) {
+            try {
+                await fmp.file_download(hashurl, root, 'hash.json');
+                for (let i = 0; i < newhash.length; i++) {
+                    await fmp.file_download((`${jsonurl}${newhash[i].fname}`), root, `${newhash[i].fname}`);
+                }
+                break;
+            }
+            catch (e) {
+                if (i < 3) {
+                    logger.info("🟡json文件下载出错：进行第" + i + "次尝试" + e);
                 }
                 else {
-                    resolve();
-                }
-            });
-        });
-    }
-    //背景
-    function back_creat(t_hi, outputPath) {
-        const canvas = createCanvas(1100, t_hi);
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = color_di;
-        ctx.fillRect(0, 0, 1100, t_hi);
-        // 创建一个可写流并将canvas的内容以PNG格式写入
-        const out = fs_1.default.createWriteStream(outputPath);
-        const stream = canvas.createPNGStream();
-        stream.pipe(out);
-        out.on('finish', () => console.log('The PNG file was created.'));
-    }
-    function calcula_hw(originalWidth, originalHeight, newHeight) {
-        return Math.floor(originalWidth * (newHeight / originalHeight));
-    }
-    async function mergeImages(backgroundImageSrc, images) {
-        try {
-            // 使用 readFile 读取背景图像的内容到缓冲区
-            const bgImageData = await (0, promises_1.readFile)(backgroundImageSrc);
-            // 加载背景图像
-            const backgroundImage = await (0, canvas_1.loadImage)(bgImageData);
-            // 创建画布
-            const canvas = createCanvas(backgroundImage.width, backgroundImage.height);
-            const ctx = canvas.getContext('2d');
-            // 绘制背景图像
-            ctx.drawImage(backgroundImage, 0, 0, backgroundImage.width, backgroundImage.height);
-            // 加载所有图像
-            // 加载所有图像
-            for (let i = 0; i < images.length; i++) {
-                let attempts = 0;
-                const maxAttempts = 3;
-                while (attempts < maxAttempts) {
-                    try {
-                        // 使用 readFile 读取图像的内容到缓冲区
-                        const imgData = await (0, promises_1.readFile)(images[i].src);
-                        const img = await (0, canvas_1.loadImage)(imgData);
-                        const newHeight = images[i].height || img.height;
-                        const newWidth = calcula_hw(img.width, img.height, newHeight);
-                        // 在画布上绘制元素图像
-                        ctx.drawImage(img, 0, 0, img.width, img.height, images[i].x, images[i].y, newWidth, newHeight);
-                        // 如果尝试成功，跳出循环
-                        break;
-                    }
-                    catch (error) {
-                        attempts++; // 如果尝试失败，增加尝试次数
-                        if (attempts === maxAttempts) {
-                            // 如果已达到最大尝试次数，记录错误信息
-                            logger.info(`Error loading image at ${images[i].src} after ${maxAttempts} attempts:`, error);
-                        }
-                    }
+                    logger.info("🔴" + i + "次尝试后依旧出错" + e);
+                    break;
                 }
             }
-            // 将画布转换为缓冲区
-            const buffer = canvas.toBuffer();
-            // 保存到本地
-            await (0, promises_1.writeFile)('output.jpg', buffer);
         }
-        catch (error) {
-            console.error('Error in mergeImages:', error);
-        }
+        logger.info("🟢 json文件更新完毕");
     }
-    //屎山
-    //屎山
-    //屎山
-    //出生即屎山
-    /**
-     * 创建一个圆角矩形画框，内部是一张图片
-     * @param imagePath 本地图片的路径
-     */
-    var img_1_height;
-    async function create_user_Image(imagePath) {
-        // 加载本地图片
-        const image = await (0, canvas_1.loadImage)(imagePath);
-        // 设置画布的宽度为900像素，或者更大以保持图片的宽高比
-        const canvasWidth = 500;
-        const scale = canvasWidth / image.width;
-        const canvasHeight = image.height * scale;
-        img_1_height = canvasHeight;
-        // 创建画布
-        const canvas = createCanvas(canvasWidth, canvasHeight);
-        const ctx = canvas.getContext('2d');
-        // 设置圆角矩形的边界和圆角大小
-        const cornerRadius = 50;
-        ctx.beginPath();
-        ctx.moveTo(cornerRadius, 0);
-        ctx.lineTo(canvasWidth - cornerRadius, 0);
-        ctx.quadraticCurveTo(canvasWidth, 0, canvasWidth, cornerRadius);
-        ctx.lineTo(canvasWidth, canvasHeight - cornerRadius);
-        ctx.quadraticCurveTo(canvasWidth, canvasHeight, canvasWidth - cornerRadius, canvasHeight);
-        ctx.lineTo(cornerRadius, canvasHeight);
-        ctx.quadraticCurveTo(0, canvasHeight, 0, canvasHeight - cornerRadius);
-        ctx.lineTo(0, cornerRadius);
-        ctx.quadraticCurveTo(0, 0, cornerRadius, 0);
-        ctx.closePath();
-        // 剪切圆角矩形区域
-        ctx.clip();
-        // 在圆角矩形内绘制并放大图片以填满900像素宽度
-        ctx.drawImage(image, 0, 0, canvasWidth, canvasHeight);
-        // 将画布内容保存为 PNG 格式，并覆盖原始图片
-        const buffer = canvas.toBuffer('image/png');
-        fs_1.default.writeFileSync(imagePath, buffer);
-    }
-    // 创建一个头像生成函数
-    //byGPT4
-    async function createAvatar(url, nickname) {
-        const image = await loadImageFromUrl(url);
-        // 计算画布的宽度和高度
-        const canvasWidth = image.width + 800; // 额外的200像素用于显示昵称
-        const canvasHeight = image.height;
-        // 创建画布
-        const canvas = createCanvas(canvasWidth, canvasHeight);
-        const context = canvas.getContext('2d');
-        // 设置背景颜色并填充整个画布
-        context.fillStyle = color_di;
-        context.fillRect(0, 0, canvasWidth, canvasHeight);
-        // 保存当前上下文状态
-        context.save();
-        // 创建圆形剪裁区域
-        context.beginPath();
-        context.arc(image.width / 2, image.height / 2, image.width / 2, 0, Math.PI * 2);
-        context.closePath();
-        context.clip();
-        // 在画布上画出头像
-        context.drawImage(image, 0, 0, image.width, image.height);
-        // 恢复上下文状态
-        context.restore();
-        // 设置昵称的字体和颜色
-        context.font = `bold 70px ${fonts}`; // 设置字体大小
-        context.fillStyle = 'black'; // 设置字体颜色
-        // 在头像右侧写出昵称
-        const nicknameX = image.width + 30; // 昵称的x坐标（在头像右侧10像素的位置）
-        const nicknameY = image.height / 3; // 昵称的y坐标（在头像垂直中心的位置）
-        context.fillText(nickname, nicknameX, nicknameY);
-        return canvas.toBuffer('image/jpeg');
-    }
-    //图片下载函数
-    async function loadImageFromUrl(url) {
-        const imageData = await ctx.http.get(url, { responseType: 'arraybuffer' });
-        if (!imageData) {
-            throw new Error('No image data');
-        }
-        const image = await (0, canvas_1.loadImage)(Buffer.from(imageData));
-        return image;
-    }
-    //图片保存函数
-    async function saveImage(buffer, path) {
-        return new Promise((resolve, reject) => {
-            fs_1.default.writeFile(path, buffer, (err) => {
-                if (err)
-                    reject(err);
-                else
-                    resolve();
-            });
-        });
-    }
-    async function loadImageFromUrl_1(url) {
-        const imageData = await ctx.http.get(url, { responseType: 'arraybuffer' });
-        if (!imageData) {
-            throw new Error('No image data');
-        }
-        // 直接返回 Buffer，不再调用 loadImage
-        return Buffer.from(imageData);
-    }
-    // 定义 saveImage 函数
-    async function saveImage_pro(imageElement, savePath) {
-        const urlMatch = imageElement.match(/url="([^"]+)"/);
-        const fileMatch = imageElement.match(/file="([^"]+)"/);
-        if (!urlMatch || !fileMatch) {
-            throw new Error('Invalid image element string');
-        }
-        const url = urlMatch[1];
-        let fileName = fileMatch[1];
-        // 清理文件名中的非法字符
-        fileName = fileName.replace(/[<>:"\/\\|?*]+/g, '') + '.png';
-        // 确保保存路径存在
-        if (!fs_1.default.existsSync(savePath)) {
-            fs_1.default.mkdirSync(savePath, { recursive: true });
-        }
+    async function init_download() {
+        logger.info('⬇️ 开始下载插件必须资源，请稍等哦（*＾-＾*）');
+        await fmp.file_download('https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/json%2Fsms_studata_main.json', root, 'sms_studata_main.json');
+        const jsondata = await fmp.json_parse(`${root}/${exports.json_file_name}`);
         try {
-            const imageBuffer = await loadImageFromUrl_1(url);
-            const filePath = path_1.default.join(savePath, fileName);
-            fs_1.default.writeFileSync(filePath, imageBuffer);
+            const stulen = jsondata.length;
+            for (let i = 0; i < stulen; i++) {
+                await fmp.file_download(`${cos1}stu_icon_db_png/${jsondata[i].Id_db}.png`, await root, jsondata[i].Id_db + '.png');
+                const num = Math.round((i / stulen) * 100);
+                if (num == 25 || num == 50 || num == 75 || num == 95) {
+                    logger.info('下载进度' + num + '%');
+                }
+            }
+            await fmp.file_download(`${cos1}img_file/khrtalk_favor.png`, root, 'khrtalk_favor.png');
+            logger.info('✔️ khr-talk资源文件下载完毕');
         }
-        catch (error) {
+        catch (e) {
+            logger.error('出现错误' + e);
+            return;
         }
     }
-    // 示例用法
-    // saveImage('<image ... />', '/path/to/save').then(() => console.log('Done'));
-    var M = 0;
-    var wid;
+    await initia();
+    //await init_download()
+    try {
+        ctx.setInterval(async () => await initia(), 3 * 60 * 60 * 1000);
+    }
+    catch (e) {
+        logger.info(e);
+    }
+    //背景函数
+    async function create_background(hi) {
+        const wi = 2600 * A;
+        const canvas = await ctx.canvas.createCanvas(wi, hi);
+        const back = canvas.getContext('2d');
+        back.fillStyle = color_di;
+        back.fillRect(0, 0, wi, hi);
+        return canvas.toBuffer("image/png");
+    }
+    //羁绊创建函数
+    async function create_favor_img(name) {
+        const wid = 2762 * A;
+        const hei = 638 * A;
+        let font_size = 100 * A;
+        const favorimg = await ctx.canvas.loadImage(`${drawm}${root}/khrtalk_favor.png`);
+        const favor = await ctx.canvas.createCanvas(wid, hei);
+        const cre = favor.getContext('2d');
+        cre.drawImage(favorimg, 0, 0, wid / 1.5, hei / 1.5);
+        cre.textAlign = 'center';
+        cre.fillStyle = color_di;
+        const text = `前往${name}的羁绊剧情`;
+        console.log(text.length);
+        if (text.length > 16) {
+            const fsize = (text.length - 16) * 1.2;
+            cre.font = `bold ${font_size - fsize}px ${fonts}`;
+        }
+        else {
+            cre.font = `bold ${font_size}px ${fonts}`;
+        }
+        cre.fillText(text, 920 * A, 345 * A);
+        return favor.toDataURL("image/png");
+    }
+    //头像创建函数
+    async function create_Avatar_creation(url, stu_name) {
+        const avatar_hi = 500 * A;
+        const avatar_wi = 2600 * A;
+        const fontsize = 140 * A;
+        const img_data = await ctx.canvas.loadImage(url);
+        let wids = config.draw_modle == "canvas" ? 'width' : 'naturalWidth';
+        let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+        let bighw;
+        img_data[heis] < img_data[wids] ? bighw = img_data[heis] : bighw = img_data[wids];
+        const f = 500 / bighw;
+        let new_h = img_data[heis] * f;
+        let new_w = img_data[wids] * f;
+        const canvas = await ctx.canvas.createCanvas(avatar_wi, avatar_hi);
+        const ctx_a = canvas.getContext('2d');
+        ctx_a.fillStyle = color_di;
+        ctx_a.fillRect(0, 0, avatar_wi, avatar_hi);
+        ctx_a.save();
+        ctx_a.beginPath();
+        ctx_a.arc(250 * A, 250 * A, 240 * A, 0, Math.PI * 2);
+        ctx_a.clip();
+        ctx_a.drawImage(img_data, 0, 0, new_w * A, new_h * A);
+        ctx_a.restore();
+        ctx_a.fillStyle = '#000000';
+        ctx_a.font = `bold ${fontsize}px ${fonts}`;
+        ctx_a.fillText(stu_name, 540 * A, 180 * A);
+        return canvas.toBuffer("image/png");
+    }
     //对话框创建函数
-    //byGPT4
-    function extendContext(context) {
-        context.constructor.prototype.roundRect = function (x, y, w, h, r) {
-            if (w < 2 * r)
-                r = w / 2;
-            if (h < 2 * r)
-                r = h / 2;
-            this.beginPath();
-            this.moveTo(x + r, y);
-            this.arcTo(x + w, y, x + w, y + h, r);
-            this.arcTo(x + w, y + h, x, y + h, r);
-            this.arcTo(x, y + h, x, y, r);
-            this.arcTo(x, y, x + w, y, r);
-            this.closePath();
-            return this;
-        };
-    }
-    function getTextWidth(text, context) {
-        return context.measureText(text).width;
-    }
-    async function renderTextToImage(text, color, randoms) {
-        M = 0; //换行次数
-        const fontSize = 70; //字体大小
-        const lineHeight = fontSize * 1.3; //行距
-        const maxLineWidth = 950; //最大宽度
-        const padding = 25; //边框距离
-        const margin = 0;
-        const words = text.split('');
-        const lines = [];
-        let line = '';
-        let lineWidth = 0;
-        const tempCanvas = createCanvas(1, 1);
-        const tempContext = tempCanvas.getContext('2d');
-        tempContext.font = `bold ${fontSize}px ${fonts}`;
-        for (const word of words) {
-            const wordWidth = getTextWidth(word, tempContext);
-            if (lineWidth + wordWidth > maxLineWidth && line !== '') {
-                lines.push({ text: line, width: lineWidth });
-                line = word;
-                lineWidth = wordWidth;
-                M++;
+    var N = 0;
+    async function create_dialog_box(text, color) {
+        N = 0;
+        // 字体大小
+        const fontSize = 105 * A;
+        // 行高
+        const lineHeight = 150 * A;
+        // 每行最大字符数
+        const maxLineLength = 34;
+        // 基底高度
+        let baseHeight = 80 * A;
+        // 基底宽度
+        let baseWidth = 300 * A;
+        // 弧度
+        let rad = 60 * A;
+        let wid_text = 0;
+        function splitText(text, maxLineWidth) {
+            let lines = [];
+            let currentLine = '';
+            let currentLineWidth = 0;
+            for (let char of text) {
+                // 判断字符是全角还是半角
+                let charWidth = /[\u0391-\uFFE5]/.test(char) ? 2 : 1;
+                if (currentLineWidth + charWidth > maxLineWidth) {
+                    N++;
+                    lines.push(currentLine);
+                    currentLine = char;
+                    currentLineWidth = charWidth;
+                }
+                else {
+                    currentLine += char;
+                    currentLineWidth += charWidth;
+                    /[\u0391-\uFFE5]/.test(char) ? wid_text += fontSize : wid_text += (fontSize / 2);
+                }
             }
-            else {
-                line += word;
-                lineWidth += wordWidth;
+            if (currentLine) {
+                lines.push(currentLine);
             }
+            return lines;
         }
-        lines.push({ text: line, width: lineWidth });
-        const rectHeight = lines.length * lineHeight + 2 * padding;
-        const rectWidth = Math.max(...lines.map(l => l.width)) + 2 * padding;
-        const canvasWidth = rectWidth + 2 * margin;
-        wid = canvasWidth;
-        const canvasHeight = rectHeight + 2 * margin;
-        const canvas = createCanvas(canvasWidth, canvasHeight);
+        let lines = splitText(text, maxLineLength);
+        baseHeight += lines.length * lineHeight;
+        wid_text > 1800 * A ? wid_text = 1800 * A : '';
+        baseWidth = (wid_text + rad * 2); // 加上左右两边的弧度
+        const canvas = await ctx.canvas.createCanvas(baseWidth, baseHeight);
         const context = canvas.getContext('2d');
-        extendContext(context);
-        context.fillStyle = color_di;
-        context.fillRect(0, 0, canvasWidth, canvasHeight);
-        context.font = `bold ${fontSize}px ${fonts}`;
+        // 绘制圆角矩形
+        context.beginPath();
+        context.moveTo(rad, 0);
+        context.arcTo(baseWidth, 0, baseWidth, baseHeight, rad);
+        context.arcTo(baseWidth, baseHeight, 0, baseHeight, rad);
+        context.arcTo(0, baseHeight, 0, 0, rad);
+        context.arcTo(0, 0, baseWidth, 0, rad);
+        context.closePath();
         context.fillStyle = color;
-        context.roundRect(margin, margin, rectWidth, rectHeight, 40); //最后一个是弧度
         context.fill();
-        context.fillStyle = '#F0F0F0';
-        let y = margin + padding + fontSize;
-        for (const { text } of lines) {
-            context.fillText(text, margin + padding, y);
-            y += lineHeight;
+        context.font = `bold ${fontSize}px ${fonts}`;
+        context.fillStyle = '#FFFFFF';
+        // 绘制文本
+        for (let i = 0; i < lines.length; i++) {
+            context.fillText(lines[i], rad - (10 * A), rad + (i * lineHeight) + (90 * A));
         }
-        const buffer = canvas.toBuffer('image/jpeg');
-        fs_1.default.writeFileSync(path_1.default.join(__dirname +
-            '../../../../data/momotalk-data' + '/momotalk' + text.substring(0, 10) + '_' + randoms + '.jpg'), buffer);
+        return canvas.toDataURL("image/png");
     }
     //旁白创建函数
-    //byGPT4
-    function getTexchorus(text, context) {
-        return context.measureText(text).width;
-    }
-    async function chorus_img(text, color) {
-        M = 0; //重置换行次数
-        const fontSize = 70; //字体大小
-        const lineHeight = fontSize * 1.3; //行距
-        const maxLineWidth = 1600; //最大宽度
-        const words = text.split('');
-        const lines = [];
-        let line = '';
-        let lineWidth = 0;
-        const tempCanvas = createCanvas(1, 1);
-        const tempContext = tempCanvas.getContext('2d');
-        tempContext.font = `bold ${fontSize}px ${fonts}`;
-        for (const word of words) {
-            const wordWidth = getTextWidth(word, tempContext);
-            if (lineWidth + wordWidth > maxLineWidth && line !== '') {
-                lines.push({ text: line, width: lineWidth });
-                line = word;
-                lineWidth = wordWidth;
+    async function create_aside(text) {
+        const fontSize = 85 * A;
+        // 行高
+        const lineHeight = 100 * A;
+        // 每行最大字符数
+        const maxLineLength = 55;
+        // 基底高度
+        let baseHeight = 50 * A;
+        // 基底宽度
+        let baseWidth = 180 * A;
+        // 弧度
+        let rad = 40 * A;
+        let wid_text = 0;
+        function splitText(text, maxLineWidth) {
+            let lines = [];
+            let currentLine = '';
+            let currentLineWidth = 0;
+            for (let char of text) {
+                // 判断字符是全角还是半角
+                let charWidth = /[\u0391-\uFFE5]/.test(char) ? 2 : 1;
+                if (currentLineWidth + charWidth > maxLineWidth) {
+                    lines.push(currentLine);
+                    currentLine = char;
+                    currentLineWidth = charWidth;
+                }
+                else {
+                    currentLine += char;
+                    currentLineWidth += charWidth;
+                    /[\u0391-\uFFE5]/.test(char) ? wid_text += fontSize : wid_text += (fontSize / 2);
+                }
             }
-            else {
-                line += word;
-                lineWidth += wordWidth;
-                M++;
+            if (currentLine) {
+                lines.push(currentLine);
             }
+            return lines;
         }
-        lines.push({ text: line, width: lineWidth });
-        const canvasHeight = lines.length * lineHeight;
-        const canvasWidth = Math.max(...lines.map(l => l.width));
-        const canvas = createCanvas(canvasWidth, canvasHeight);
+        let lines = splitText(text, maxLineLength);
+        baseHeight += lines.length * lineHeight;
+        wid_text > 2280 * A ? wid_text = 2280 * A : '';
+        baseWidth = (wid_text + rad * 2); // 加上左右两边的弧度
+        const canvas = await ctx.canvas.createCanvas(baseWidth, baseHeight);
         const context = canvas.getContext('2d');
+        // 绘制圆角矩形
+        context.beginPath();
+        context.moveTo(rad, 0);
+        context.arcTo(baseWidth, 0, baseWidth, baseHeight, rad);
+        context.arcTo(baseWidth, baseHeight, 0, baseHeight, rad);
+        context.arcTo(0, baseHeight, 0, 0, rad);
+        context.arcTo(0, 0, baseWidth, 0, rad);
+        context.closePath();
+        context.fillStyle = '#D9CBD0';
+        context.fill();
         context.font = `bold ${fontSize}px ${fonts}`;
-        context.fillStyle = color;
-        context.textAlign = 'center'; // 设置文本居中
-        let y = fontSize;
-        for (const { text, width } of lines) {
-            context.fillText(text, canvasWidth / 2, y); // 设置文本居中
-            y += lineHeight;
+        context.fillStyle = '#1C1A1B';
+        // 绘制文本
+        for (let i = 0; i < lines.length; i++) {
+            context.fillText(lines[i], rad - (14 * A), rad + (i * lineHeight) + (55 * A));
         }
-        const buffer = canvas.toBuffer('image/png');
-        fs_1.default.writeFileSync(path_1.default.join(__dirname +
-            '../../../../data/momotalk-data' + '/mochorus.png'), buffer);
+        return canvas.toDataURL("image/png");
     }
-    function writeJson0(filePath, content) {
-        let data = [];
-        // 如果文件存在，读取文件内容
-        if (fs_1.default.existsSync(filePath)) {
-            const fileContent = fs_1.default.readFileSync(filePath, 'utf-8');
-            if (fileContent) {
-                data = JSON.parse(fileContent);
-            }
-        }
-        // 将新内容添加到数组中
-        data.push(content);
-        // 将数组转换为 JSON 格式并写入文件
-        fs_1.default.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    // 圆角图片生成函数
+    async function create_user_Image(imagePath) {
+        const image = await ctx.canvas.loadImage(imagePath);
+        const canvaswidth = 800 * A;
+        let wids = config.draw_modle == "canvas" ? 'width' : 'naturalWidth';
+        let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+        //let bighw
+        //image[heis] < image[wids] ? bighw = image[heis] : bighw = image[wids]
+        const scale = canvaswidth / image[heis];
+        const canvasHeight = image[heis] * scale;
+        const new_wi = image[wids] * scale;
+        const canvasWidth = new_wi;
+        // 创建画布
+        const canvas = await ctx.canvas.createCanvas(new_wi, canvasHeight);
+        const ctxs = canvas.getContext('2d');
+        // 绘制圆角矩形路径
+        const cornerRadius = 60 * A;
+        ctxs.beginPath();
+        ctxs.moveTo(cornerRadius, 0);
+        ctxs.lineTo(canvasWidth - cornerRadius, 0);
+        ctxs.quadraticCurveTo(canvasWidth, 0, canvasWidth, cornerRadius);
+        ctxs.lineTo(canvasWidth, canvasHeight - cornerRadius);
+        ctxs.quadraticCurveTo(canvasWidth, canvasHeight, canvasWidth - cornerRadius, canvasHeight);
+        ctxs.lineTo(cornerRadius, canvasHeight);
+        ctxs.quadraticCurveTo(0, canvasHeight, 0, canvasHeight - cornerRadius);
+        ctxs.lineTo(0, cornerRadius);
+        ctxs.quadraticCurveTo(0, 0, cornerRadius, 0);
+        ctxs.closePath();
+        ctxs.clip();
+        ctxs.drawImage(image, 0, 0, canvasWidth, canvasHeight);
+        return canvas.toDataURL("image/png");
     }
-    // 创建并写入 JSON 文件的函数
-    //byGPT4
-    function in_json_stusay(filePath, content, timess) {
-        let data = [];
-        // 如果文件存在，读取文件内容
-        if (fs_1.default.existsSync(filePath)) {
-            const fileContent = fs_1.default.readFileSync(filePath, 'utf-8');
-            if (fileContent) {
-                data = JSON.parse(fileContent);
-            }
+    function type_ful(input) {
+        if (input[0].type == "text") {
+            return input[0].attrs.content;
         }
-        // 找到 "say_student" 属性，并将新的内容添加到这个属性
-        let status = false; //🔴
-        let timestamp = []; //存储时间码
-        for (let i = 0; i < data.length; i++) {
-            if (data[i].hasOwnProperty('say_student')) {
-                timestamp.push(data[i].say_student[0]);
-                if (timestamp.includes(timess)) {
-                    data[i].say_student = content.say_student;
-                    status = false; //🔴
-                }
-                else {
-                    status = true; //🟢
-                }
+        else if (input[0].type == "img") {
+            return input[0].attrs.src;
+        }
+    }
+    function getStringLength(str) {
+        let length = 0;
+        for (let i = 0; i < str.length; i++) {
+            const charCode = str.charCodeAt(i);
+            if ((charCode >= 0x00 && charCode <= 0xFF) || // 半角字符范围
+                (charCode >= 0xFF61 && charCode <= 0xFF9F)) { // 半角的日文字符范围
+                length += 1;
             }
             else {
-                status = true; //🟢
+                length += 2; // 全角字符
             }
         }
-        if (status == true) { //在不存在时间码和数组的情况下，新建数组
-            data.push(content);
-            logger.info(`✅新建了时间戳⏰为：${timess}的对话记录`);
-        }
-        // 将数组转换为 JSON 格式并写入文件
-        fs_1.default.writeFileSync(filePath, JSON.stringify(data, null, 2));
+        return length;
     }
-    /**
-     * 递归地从 JSON 结构中获取指定属性的值。
-     * @param filePath JSON 文件的路径。
-     * @param obj 要获取的属性名称。
-     * @returns 包含所有找到的属性值的数组。
-     */
-    function getjson(filePath, obj) {
-        const fileContent = fs_1.default.readFileSync(filePath, 'utf-8');
-        const data = JSON.parse(fileContent);
-        let results = [];
-        // 递归函数，用于深度搜索 JSON 数据
-        function search(item) {
-            if (Array.isArray(item)) {
-                // 如果是数组，递归每个元素
-                for (const element of item) {
-                    search(element);
-                }
+    let arr_add = true;
+    function hei_cal(input) {
+        let yout = 0;
+        if (input[0].type == "text") {
+            const tlength = getStringLength(input[0].attrs.content);
+            let aa = (tlength / 36);
+            aa = Math.round(aa);
+            aa < 1 ? aa = 1 : aa = aa;
+            yout = ((230 * A) * aa) + (20 * A);
+            if (/s=/.test(input[0].attrs.content) && arr_add) {
+                yout += 300 * A;
+                arr_add = false;
             }
-            else if (item && typeof item === 'object') {
-                // 如果是对象，检查是否有匹配的属性
-                if (item.hasOwnProperty(obj)) {
-                    results.push(item[obj]);
-                }
-                // 递归对象的所有值
-                for (const key of Object.keys(item)) {
-                    search(item[key]);
-                }
+            else if ((input[0].attrs.content) == '=img') {
+                yout = (800 * A) + (20 * A);
+            }
+            else {
+                arr_add = true;
+            }
+            if (input.length > 1) {
+                yout += (800 * A) + (20 * A);
             }
         }
-        // 开始递归搜索
-        search(data);
-        return results;
-    }
-    //定义读取用户id的json文件路径的函数
-    function jsonfpFun(userid) {
-        const dirPath = path_1.default.join(__dirname, '../../../data/momotalk-data');
-        const jsonpath = path_1.default.join(dirPath, `koharu-talk_data_${userid}.json`); //JSON文件的路径
-        return jsonpath;
-    }
-    function deleteFile(path) {
-        return new Promise((resolve, reject) => {
-            fs_1.default.unlink(path, (error) => {
-                if (error) {
-                    reject(error);
-                }
-                else {
-                    resolve();
-                }
-            });
-        });
-    }
-    async function avatar_mix(imageUrl, nickname) {
-        try {
-            const avatar = await createAvatar(imageUrl, nickname);
-            await saveImage(avatar, path_1.default.join(__dirname, '../../../data/momotalk-data/' + nickname + '.jpg'));
+        else if (input[0].type == "img") {
+            yout = (800 * A) + (20 * A);
         }
-        catch (error) {
-            logger.error('Error creating avatar:', error);
-        }
-    } //头像生成函数调用函数
-    //魔改苗✌的学生匹配算法函数
-    function SANAE_MATCH_SYSTEM(message) {
-        if (!message) {
-            return "请输入查询角色名";
+        return yout;
+    }
+    // .usage('第一个参数是头像，可@群u，或传入学生名\n[...rest]后继参数传入图片或者文字\n使用空格分隔参数')
+    //.example('talk 小春 呜呜呜 老师')
+    ctx.command('talk <arg1> [...rest]', '生成momotalk对话')
+        .option('nikc name', '-n [beta]')
+        .option("favo", "-f")
+        .action(async ({ session, options }, arg1, ...rest) => {
+        let help_pla = [];
+        if (session.event.platform == 'qq') {
+            help_pla[0] = '';
+            help_pla[1] = '@机器人/';
+            help_pla[2] = '';
+            help_pla[3] = `  
+🟢5.使用指令触发者的头像和自定义昵称
+      ${help_pla[1]}talk =me 啊哈哈 -n 夏莱老师`;
+            help_pla[4] =
+                `🟨注意
+-目前手机端的qq不能很好的发送图文消息，=img功能需要@机器人并在消息内包含图片`;
         }
         else {
-            // 从文件中读取学生名
-            const NameData = require("./sanae_match_system/MatchLib.json");
-            // 调用匹配函数
-            let studentMessage = (0, match_1.MatchStudentName)(message);
-            // 如果没匹配到，可能是字符串过长，或是根本就不对的信息
-            if (studentMessage.length == 0) {
-                // 检测字符串长度是否过长
-                if (message.length >= 6) {
-                    return `未匹配到“${message}”相关学生信息，请适当缩短输入或更换描述。`;
-                }
-                else {
-                    return `未匹配到“${message}”相关学生信息，请适当增加准确情报或更换描述。`;
-                }
-                // 匹配到了，则判断匹配到了几个
+            help_pla[0] = '和昵称';
+            help_pla[1] = '';
+            help_pla[2] = '▪️当@群成员时，会使用该群成员的头像和昵称（beta）';
+            help_pla[3] = `  
+🟢5.使用指令触发者的头像和昵称
+      ${help_pla[1]}talk =me 啊哈哈`;
+            help_pla[4] = '';
+        }
+        //◾◻️▫️▪️◽◾◻️◼️⬜⬛🟩🟨🟧🟢🟡🟠🔵
+        const help_text = `
+koharu-talk-v0.3-beta
+使用方法：
+talk [对话对象] [正文1 正文2 正文3...] [选项]
+◻️正文之间使用空格来分隔
+◻️参数介绍：
+◽[对话对象]：
+    ▪️需输入学生名
+    ▪️当输入 me= 时，会使用指令调用者的头像${help_pla[0]}
+    ${help_pla[2]}
+◽[正文]：
+    ▪️对话内容，使用空格来分隔，每个正文会生成对话气泡
+    ▪️当正文内容为 s=[文本] 时，会生成老师的消息气泡
+    ▪️当正文内容为 a=[文本] 时，会生成旁白的气泡
+    ▪️当正文内容为 =img 时，会在这个=img的位置占位一张图片
+◽[选项]
+    ▪️-f 当带有“-f”选项时，会在对话尾部生成进入羁绊剧情的气泡
+    ▪️-n [自定义昵称] 当带有“-n”选项时，会将-n后面的文字作为自定义昵称。注意：-n后面需要带上空格
+
+◻️各种功能使用示例：
+🟢1.常规方法
+      ${help_pla[1]}talk 小春 呜呜 老师好 我来补习了
+🟢2.生成老师的对话
+      ${help_pla[1]}talk 爱丽丝 邦邦咔邦！ 老师早上好 s=早上好，爱丽丝
+🟢3.生成旁白
+      ${help_pla[1]}talk 白子 a=白子兴奋地来到了夏莱办公室 老师。现在要不要一起去骑行？
+🟢4.自定义昵称
+      ${help_pla[1]}talk 小春 呜呜呜呜 怎么还是不及格... -n 小笨春${help_pla[3]}
+🟢6.进入羁绊剧情
+      ${help_pla[1]}talk 若藻 呼呼呼呼 老师 你逃不掉的❤ -f
+🟢7.输入图片
+      ${help_pla[1]}talk 柚子 =img 老师，这么快就要用我送您的劵吗 s=打大蛇能全暴击吗
+      ▪️“=img”的位置会预留一个图片，后继需要根据引导发送图片
+      ${help_pla[4]}
+      反馈：2609631906@qq.com
+    `;
+        const json_data = await fmp.json_parse(`${root}/${exports.json_file_name}`);
+        const optionss = {
+            nick: options['nikc name'],
+            favo: options.favo
+        };
+        console.log(optionss);
+        logger.info(rest);
+        //能跑就行，比0.2还乱
+        if (process) {
+            const proce_out = await process_baidu(arg1);
+            if (proce_out == "不合规") {
+                return violate_text;
             }
-            else if (studentMessage.length == 1) {
-                // 匹配到1个结果直接输出,魔改后只返回id
-                return (NameData[parseInt(studentMessage[0]) - 10000].Id_db);
+        }
+        async function cal_arg1(arg1) {
+            let stuname = [];
+            let avaimg_url = '';
+            let output = [];
+            if (!arg1) {
+                return help_text;
             }
             else {
-                // 匹配到多个结果输出全部（最多5个，由上到下概率降低，已经在匹配函数中做过处理，直接调用即可）
-                let studentMatchResults = [`“${message}”匹配到了多个结果：\n`];
-                for (let i = 0; i < studentMessage.length; i++) {
-                    studentMatchResults.push(NameData[parseInt(studentMessage[i]) - 10000].Name_zh_ft);
-                }
-                return studentMatchResults;
-            }
-        }
-    }
-    ctx.command('talk')
-        .alias('写文')
-        .usage('使用指令后会在data文件夹创建json文件，并需要根据引导初始化角色')
-        .action(async ({ session }) => {
-        async function main() {
-            try {
-                await createDir(path_1.default.join(__dirname, '../../../data/momotalk-data'));
-                console.log('Directory created successfully.');
-            }
-            catch (err) {
-                console.error('An error occurred:', err);
-            }
-        }
-        main();
-        const jsonfp = jsonfpFun(session.userId);
-        logger.info(`🍑🍑已创建文件：${jsonfp}`);
-        writeJson0(jsonfp, {
-            "author_id": session.userId,
-            "guild_id": session.guildId
-        }); //写入当前作者id
-        await session.send("请输入要添加的对话角色数量（1-50）");
-        let ii = await session.prompt(20000);
-        var stuname;
-        let numb = parseInt(ii); //添加的学生数目
-        await writeJson0(jsonfp, { "total_number_stu": numb }); //写入总数
-        if (numb > 50 || numb < 1) {
-            return '学生数目输入有误';
-        }
-        let json;
-        let jsons = [];
-        let all_stu = [];
-        let match_out;
-        let id;
-        let a = [];
-        for (let i = 0; i < numb; i++) {
-            i + 1;
-            await session.send(`请添加第${i + 1}位角色`);
-            stuname = (await session.prompt(20000));
-            json =
-                {
-                    no: i + 1,
-                    stuname: stuname
-                };
-            jsons.push(json);
-            all_stu.push(stuname);
-        }
-        await session.send(`${numb}位角色创建成功，正在验证输入...`);
-        for (let i = 0; i < all_stu.length; i++) {
-            match_out = SANAE_MATCH_SYSTEM(all_stu[i]);
-            if (!Number.isFinite(match_out)) {
-                a = [];
-                for (let ii = 1; ii < match_out.length; ii++) {
-                    a.push((ii + '. ') + match_out[ii] + '\n');
-                }
-                await session.send(`第${i + 1}位角色未成功验证，请输入编号以确认角色\n${a}`);
-                id = (await session.prompt(20000));
-                if (!exports.name)
-                    return '等待输入超时,已经自动使用一号角色:' + match_out[1];
-                jsons[i].stuname = match_out[Number(id)];
-            }
-        }
-        try {
-            writeJson0(jsonfp, jsons);
-            session.send('成功写入');
-        }
-        catch (error) {
-            session.send('爆!\n' + error);
-        }
-        if (!exports.name)
-            return '等待输入超时';
-        //文本记录模块
-    });
-    let no = 0;
-    let num;
-    let json;
-    let o = [
-        '切换',
-        "换人",
-        "切换角色",
-        "换",
-        "换学生",
-        "更换",
-        "更换角色",
-        "更换学生",
-    ];
-    let save = [
-        '保存',
-        'save',
-        "存储"
-    ];
-    let sensei = [
-        'sensei',
-        '老师',
-        '先生',
-        '玩家'
-    ];
-    //文本记录模块
-    ctx.command('talk.start')
-        .alias('开始写文')
-        .usage('开始后将会持续监听用户在当前频道的发言\n' +
-        '使用‘切换’切换已录入角色\n' +
-        '在切换状态下发送‘老师’却换至老师\n' +
-        '发送‘保存’保存会话\n' +
-        '发送‘停止’保存并停止监听\n' +
-        '(alpha-0)')
-        .action(async ({ session }) => {
-        if (session.platform === 'qq') {
-            return '呜呜。暂不支持qq平台';
-        }
-        //声明布尔开关
-        let tog_switch = false; //🔴
-        let student_talk_status = false; //🔴
-        let sensei_talk_status = false; //🔴
-        let all_stun_ame;
-        let user_id;
-        let guild_id;
-        //定义自动保存的频率
-        num = config.reminders;
-        // 将当前日期转换为时间戳
-        let timeStamp = Date.parse(new Date().toString());
-        logger.info(`⏰当前时间戳⏲️：${timeStamp}`);
-        const jsonfp = jsonfpFun(session.userId);
-        tog_switch = true; //可以更改对象🟢
-        try {
-            all_stun_ame = getjson(jsonfp, "stuname"); //读取学生总名称
-            user_id = getjson(jsonfp, "author_id");
-            guild_id = getjson(jsonfp, "guild_id");
-        }
-        catch {
-            return '出现错误：没有创建对话记录';
-        }
-        session.send('开始创作啦，sensei！请输入【对象】');
-        let say_id = getjson(jsonfp, "say_student");
-        logger.info(`👨‍💻作者id：${user_id}  💬🗨️群组id${guild_id}`);
-        // 创建一个对象来存储每个用户的消息
-        let messages = {};
-        // 创建一个对象来存储每个用户的i值
-        let iValues = {};
-        let stuname;
-        //状态
-        const MESSAGE_Log = ctx.middleware((session, next) => {
-            if (session.userId === user_id[0]
-                && session.guildId === guild_id[0]) {
-                //console.table(messages)        
-                // 获取当前用户的发言数组，如果不存在则创建一个新的数组
-                if (!messages[session.userId]) {
-                    messages[session.userId] = [];
-                }
-                // 获取当前用户的i值，如果不存在则设置为0
-                if (!iValues[session.userId]) {
-                    iValues[session.userId] = 0;
-                }
-                // 使用当前用户的发言数组代替全局的messag数组
-                let messag = messages[session.userId];
-                let i = iValues[session.userId];
-                if (save.includes(session.content)) {
-                    session.send('正在保存');
-                    json =
-                        {
-                            "say_student": [
-                                timeStamp,
-                                getjson(jsonfp, "stuname"),
-                                messag
-                            ]
-                        };
-                    in_json_stusay(jsonfp, json, timeStamp);
-                    i = 0;
-                }
-                else if (session.content == '停止') {
-                    json =
-                        {
-                            "say_student": [
-                                timeStamp,
-                                getjson(jsonfp, "stuname"),
-                                messag
-                            ]
-                        };
-                    in_json_stusay(jsonfp, json, timeStamp);
-                    i = 0;
-                    MESSAGE_Log();
-                    session.send('已停止并保存');
-                }
-                else {
-                    if (o.includes(session.content)) {
-                        tog_switch = true; //🟢
-                        student_talk_status = false; //🔴
-                        sensei_talk_status = false; //🔴
-                        session.send('开始更改角色，请输入【对象】');
+                try {
+                    if (koishi_1.h.parse(arg1)[0].type == "text") {
+                        if (koishi_1.h.parse(arg1).length > 1) {
+                            rest = [koishi_1.h.parse(arg1)[0].attrs.content, ...rest];
+                            if (optionss.nick) {
+                                stuname[0] = optionss.nick;
+                            }
+                            else {
+                                stuname[0] = '';
+                            }
+                            avaimg_url = koishi_1.h.parse(arg1)[1].attrs.src;
+                            return [...stuname, avaimg_url];
+                        }
+                        if (arg1 == 'me=') {
+                            if (session.event.platform == 'qq') {
+                                const arrurl = `https://q.qlogo.cn/qqapp/${session.bot.config.id}/${session.event.user?.id}/640`;
+                                const get = await ctx.http.get(arrurl);
+                                if (get.byteLength <= 1512) {
+                                    stuname.push((await random.pick(json_data))['Id']);
+                                    let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
+                                    stuname[0] = json_data.find(i => i.Id == stuname[0])?.Name_zh_ft;
+                                    avaimg_url = `${drawm}${root}/${stuid}.png`;
+                                }
+                                else {
+                                    if (optionss.nick) {
+                                        stuname[0] = optionss.nick;
+                                    }
+                                    else {
+                                        stuname[0] = '';
+                                    }
+                                    avaimg_url = arrurl;
+                                    return [...stuname, avaimg_url];
+                                }
+                            }
+                            else {
+                                try {
+                                    const ids = (session.event.user.id);
+                                    const username = session.event.member.nick;
+                                    avaimg_url = qqavaurl + ids;
+                                    stuname[0] = username;
+                                    return [...stuname, avaimg_url];
+                                }
+                                catch (e) {
+                                    logger.info(e);
+                                    stuname.push((await random.pick(json_data))['Id']);
+                                    let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
+                                    stuname[0] = json_data.find(i => i.Id == stuname[0])?.Name_zh_ft;
+                                    avaimg_url = `${drawm}${root}/${stuid}.png`;
+                                    return [...stuname, avaimg_url];
+                                }
+                            }
+                        }
+                        else {
+                            try {
+                                stuname = await (0, match_mmt_1.MatchStudentName)(arg1);
+                                console.log('sanae_match:' + json_data.find(i => i.Id == stuname[0])?.Name_zh_ft);
+                            }
+                            catch (e) {
+                                stuname.push((await random.pick(json_data))['Id']);
+                            }
+                            if (stuname.length == 0) {
+                                stuname.push((await random.pick(json_data))['Id']);
+                            }
+                            else {
+                                if (optionss.nick) {
+                                    let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
+                                    stuname[0] = optionss.nick;
+                                    stuname[0] == '' ? stuname[0] = json_data.find(i => i.Id_db == stuid)?.Name_zh_ft : '';
+                                    avaimg_url = `${drawm}${root}/${stuid}.png`;
+                                    return [...stuname, avaimg_url];
+                                }
+                                else {
+                                    let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
+                                    stuname[0] = json_data.find(i => i.Id == stuname[0])?.Name_zh_ft;
+                                    avaimg_url = `${drawm}${root}/${stuid}.png`;
+                                    return [...stuname, avaimg_url];
+                                }
+                            }
+                        }
                     }
-                    if (student_talk_status == true) { //记录学生对话
-                        no++;
-                        messag.push({
-                            "say_number": no,
-                            "say_rolye": stuname,
-                            "say": (session.content)
-                        });
-                        i++;
-                    }
-                    if (sensei_talk_status == true) {
-                        no++;
-                        messag.push({
-                            "say_number": no,
-                            "say_rolye": "sensei",
-                            "say": (session.content)
-                        });
-                        i++;
-                    }
-                    if ((all_stun_ame.includes(session.content))
-                        && tog_switch === true) {
-                        student_talk_status = true; //🟢
-                        sensei_talk_status = false; //🔴
-                        tog_switch = false; //🔴
-                        session.send('正在记录' + session.content + '的对话');
-                        stuname = session.content;
-                    }
-                    if (sensei.includes(session.content)
-                        && tog_switch === true) {
-                        sensei_talk_status = true; //🟢
-                        student_talk_status = false; //🔴
-                        tog_switch = false; //🔴
-                        session.send('正在记录' + session.content + '的对话');
-                    }
-                    if (i == num) {
-                        session.send('正在保存');
-                        json =
-                            {
-                                "say_student": [
-                                    timeStamp,
-                                    getjson(jsonfp, "stuname"),
-                                    messag
-                                ]
-                            };
-                        in_json_stusay(jsonfp, json, timeStamp);
-                        i = 0;
-                    }
-                }
-                iValues[session.userId] = i;
-            }
-            else {
-                return next();
-            }
-        });
-    });
-    ctx.command('talk.delet')
-        .alias('删除记录')
-        .action(async ({ session }) => {
-        const jsonfp = jsonfpFun(session.userId);
-        try {
-            await deleteFile(jsonfp);
-            await session.send('已删除' + jsonfp);
-        }
-        catch {
-            await session.send('爆！文件可能已删除');
-        }
-    });
-    ctx.command('合成对话', '渲染最终图片')
-        .alias('渲染')
-        .usage('用法：\n' +
-        '渲染 角色 对话内容 对话内容 ...\n' +
-        '当对话内容为“老师：”时切换至老师发言\n' +
-        "对话内容可以是图片（有bug，之后修）\n" +
-        "(alpha-0)")
-        .action(async ({ session }, ...args) => {
-        if (args[0] == null) {
-            let jsfile;
-            let allsay;
-            let all_stun_ame;
-            try {
-                jsfile = jsonfpFun(session.userId);
-                allsay = getjson(jsfile, "say_student");
-                all_stun_ame = getjson(jsfile, "stuname"); //读取学生总名称
-            }
-            catch {
-                return '未找到记录，请查看使用说明';
-            }
-            let say_stu = [];
-            let says = [];
-            allsay.forEach(sayStudent => {
-                sayStudent[2].forEach((sayItem) => {
-                    if ('say_rolye' in sayItem) {
-                        say_stu.push(sayItem.say_rolye);
-                    }
-                    if ('say' in sayItem) {
-                        says.push(sayItem.say);
-                    }
-                });
-            });
-            for (let i = 0; i < all_stun_ame.length; i++) {
-                const id = SANAE_MATCH_SYSTEM(all_stun_ame[i]);
-                let src = url_alinclude + '/db_img/' + id + ".jpg";
-                avatar_mix(src, all_stun_ame[i]);
-            } //创建头像
-            const dir = path_1.default.join(__dirname, '../../../data/momotalk-data/'); //文件夹路径
-            //创建背景
-            (says.length) * 325;
-            back_creat(2600, dir + 'amomo.jpg');
-            let ran = []; //芝士随机数
-            let mi; //芝士换行
-            let paths = []; ////把路径的后缀写入数组方便后面调用
-            let all = []; //全部图片
-            let y = 40; //芝士图片高度
-            let names; //用于处理同一角色多次发言的变量
-            for (let i = 0; i < says.length; i++) {
-                mi = 0;
-                ran.push(random.int(0, 100));
-                if (say_stu[i] == "sensei") {
-                    renderTextToImage(says[i], "#4a8aca", ran[i]);
-                }
-                else {
-                    renderTextToImage(says[i], "#4c5b70", ran[i]);
-                }
-                mi = (M * 70);
-                console.log('mi:' + mi);
-                paths.push(says[i].substring(0, 10) + "_" + ran[i]);
-                if (say_stu[i] == "sensei") {
-                    if (M > 0) {
-                        wid = 800;
-                    }
-                    all.push({
-                        src: dir + 'momotalk' + paths[i] + '.jpg',
-                        x: 1070 - wid, y: y + 40, height: 115 + mi
-                    });
-                    y += M * 70;
-                }
-                else if (say_stu[i] == names) {
-                    all.push({
-                        src: dir + 'momotalk' + paths[i] + '.jpg',
-                        x: 220, y: y, height: 115 + mi
-                    });
-                    y += mi;
-                }
-                else {
-                    y += 25;
-                    all.push({
-                        src: dir + say_stu[i] + '.jpg',
-                        x: 40, y: y == 65 ? y = 40 : y, height: 170
-                    }, {
-                        src: dir + 'momotalk' + paths[i] + '.jpg',
-                        x: 220, y: y += 80, height: 115 + mi
-                    });
-                    y += M * 70;
-                }
-                names = say_stu[i];
-                y += 128;
-            }
-            //console.log(all)
-            for (let i = 0; i < 1; i++) {
-                await mergeImages(dir + 'amomo.jpg', all);
-            }
-            await session.send((0, jsx_runtime_1.jsx)("image", { url: (0, url_1.pathToFileURL)((0, path_2.resolve)(__dirname, '../../../' + 'output.jpg')) }));
-        }
-        else {
-            /*                            _ooOoo_
-             *                           o8888888o
-             *                           88" . "88
-             *                           (| -_- |)
-             *                            O\ = /O
-             *                        ____/`---'\____
-             *                      .   ' \\| |// `.
-             *                       / \\||| : |||// \
-             *                     / _||||| -:- |||||- \
-             *                       | | \\\ - /// | |
-             *                     | \_| ''\---/'' | |
-             *                      \ .-\__ `-` ___/-. /
-             *                   ___`. .' /--.--\ `. . __
-             *                ."" '< `.___\_<|>_/___.' >'"".
-             *               | | : `- \`.;`\ _ /`;.`/ - ` : | |
-             *                 \ \ `-. \_ __\ /__ _/ .-` / /
-             *         ======`-.____`-.___\_____/___.-`____.-'======
-             *                            `=---='
-             *
-            
-             */
-            //0.1.0-alpha版本
-            //快捷渲染的体系
-            //做一套不同的交互体系
-            //声明屎多的变量
-            //这些声明的变量没有准确的描述，等修/重构
-            let mi; //这个是控制对话换行的高度缩放
-            let status_number = -1;
-            let allmess = []; //这是最后递交给渲染函数的数组
-            let hi = 120; //初始高度
-            let paths = []; //这是记录路径的数组
-            let rans = []; //这是记录随机数的数组，随机数用来防止重名
-            //let images = []
-            let status;
-            let sensei_status = false;
-            let x = 0; //记录出现渲染图图的情况的变量
-            let s = 0; //记录出现渲染老师对话的情况的变量
-            let sss = 0; //记录sensei对话出现的次数，以此来结束循环（beta）
-            let fsen = 0;
-            let is = 0; //在切换回学生对话需要加头像，这个是辅助path索引的数字
-            let senseis = [
-                'sensei:',
-                '老师:',
-                '玩家:',
-                'sensei：',
-                '老师：',
-                "玩家："
-            ];
-            const id = SANAE_MATCH_SYSTEM(args[0]);
-            if (senseis.includes(args[0])) {
-                return '未指定对话学生，请重新输入';
-            }
-            if (typeof id != 'number') {
-                return '角色输入错误，请重新输入';
-            }
-            const dir = path_1.default.join(__dirname, '../../../data/momotalk-data/'); //文件夹路径
-            let src = url_alinclude + '/db_img/' + id + ".jpg";
-            await avatar_mix(src, args[0]);
-            if (senseis.includes(args[1])) {
-                hi = 40;
-            }
-            else {
-                allmess.push({
-                    src: dir + args[0] + '.jpg',
-                    x: 40, y: 40, height: 170
-                });
-            }
-            console.log(args);
-            console.log(args.length);
-            for (let i = 1; i < args.length; i++) {
-                rans.push(random.int(0, 500));
-                rans.push(random.int(0, 500));
-                if ((i + s) == args.length) {
-                    status_number = 4;
-                }
-                else if (senseis.includes(args[i])) {
-                    if (/image file/.test(args[i + 1])) {
-                        fsen = 1;
-                        status_number = 3;
+                    else if (koishi_1.h.parse(arg1)[0].type == "at") {
+                        const ids = (koishi_1.h.parse(arg1)[0].attrs.id);
+                        const username = (await session.bot.getGuildMember(session.guildId, ids)).nick;
+                        avaimg_url = qqavaurl + ids;
+                        if (optionss.nick) {
+                            stuname[0] = optionss.nick;
+                        }
+                        else {
+                            stuname[0] = username;
+                        }
+                        return [...stuname, avaimg_url];
                     }
                     else {
-                        fsen = 1;
-                        status_number = 2;
+                        if (optionss.nick) {
+                            stuname[0] = optionss.nick;
+                        }
+                        else {
+                            stuname[0] = '';
+                        }
+                        avaimg_url = koishi_1.h.parse(arg1)[0].attrs.src;
+                        return [...stuname, avaimg_url];
                     }
                 }
-                else if (/image file/.test(args[i + s])) {
-                    status_number = 1;
+                catch (e) {
+                    logger.info(e);
+                    return ['呜呜，无法处理输入的昵称'];
                 }
-                else {
-                    status_number = 0;
-                }
-                switch (status_number) {
-                    case 0:
-                        { //学生发言
-                            if (sensei_status == true) {
-                                is = 1;
-                                allmess.push({
-                                    src: dir + args[0] + '.jpg',
-                                    x: 40, y: hi, height: 170
-                                });
-                                hi += 80;
-                                sensei_status = false;
-                            }
-                            else {
-                                // is = 0
-                            }
-                            console.log('渲染学生对话-----0');
-                            i += s;
-                            renderTextToImage(args[i], "#4c5b70", rans[i]); //对话生成
-                            mi = (M * 70);
-                            console.log('i==0:' + i);
-                            paths.push(args[i].substring(0, 10) + "_" + rans[i]);
-                            /*
-                            console.table('args i:' + args[i])
-                            */
-                            console.table(paths);
-                            allmess.push({
-                                src: dir + 'momotalk' + paths[i - 1 - is] + '.jpg',
-                                x: 220, y: hi, height: 115 + mi
-                            });
-                            console.table(allmess);
-                            hi += M * 70;
-                            hi += 130;
-                            s = 0;
-                            x = 0;
-                        }
-                        break;
-                    case 1:
-                        { //学生发图/表情
-                            console.log('渲染学生发图-----1');
-                            i += s;
-                            if (sensei_status == true) {
-                                is = 1;
-                                allmess.push({
-                                    src: dir + args[0] + '.jpg',
-                                    x: 40, y: hi, height: 170
-                                });
-                                hi += 80;
-                                sensei_status = false;
-                            }
-                            else {
-                                // is = 0
-                            }
-                            await saveImage_pro(args[i], (dir)).then(() => console.log('下载成功'));
-                            let fileMatch = args[i].match(/file="([^"]+)"/);
-                            let fileName = fileMatch[1];
-                            // 清理文件名中的非法字符
-                            fileName = fileName.replace(/[<>:"\/\\|?*]+/g, '') + '.png';
-                            await create_user_Image(dir + fileName);
-                            allmess.push({
-                                src: dir + fileName,
-                                x: 220, y: hi,
-                            });
-                            hi += Math.ceil(img_1_height);
-                            hi += 10;
-                            x++;
-                            //占位，需注意
-                            paths.push('1');
-                            //占位，需注意
-                        }
-                        break;
-                    case 2: //老师发言
-                        console.log('渲染老师发言----2');
-                        renderTextToImage(args[i + fsen], "#4a8aca", rans[i]); //对话生成
-                        paths.push(args[i + fsen].substring(0, 10) + '_' + rans[i]);
-                        if (M > 0) {
-                            wid = 800;
-                        }
-                        mi = (M * 70);
-                        console.log('i-sensei:' + i);
-                        allmess.push({
-                            src: dir + 'momotalk' + paths[i - 1] + '.jpg',
-                            x: 1070 - wid, y: hi, height: 115 + mi
-                        });
-                        hi += M * 70;
-                        hi += 130;
-                        s = 1;
-                        sss++;
-                        sensei_status = true;
-                        break;
-                    case 3: //老师发图
-                        //占位，需注意
-                        paths.push('1');
-                        //占位，需注意
-                        console.log('渲染老师发图----3');
-                        await saveImage_pro(args[i + fsen], (dir)).then(() => console.log('下载成功'));
-                        let fileMatch = args[i + fsen].match(/file="([^"]+)"/);
-                        let fileName = fileMatch[1];
-                        // 清理文件名中的非法字符
-                        fileName = fileName.replace(/[<>:"\/\\|?*]+/g, '') + '.png';
-                        await create_user_Image(dir + fileName);
-                        hi += 30;
-                        allmess.push({
-                            src: dir + fileName,
-                            x: 550, y: hi,
-                        });
-                        hi += Math.ceil(img_1_height);
-                        hi -= 20;
-                        s = 1;
-                        x = 1;
-                        sss++;
-                        sensei_status = true;
-                        break;
-                    case 4:
-                        console.log('break-------4');
-                        break;
-                }
-            }
-            console.table(paths);
-            console.table(allmess);
-            //背景图创建函数
-            //啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊太乱拉啊啊啊啊啊啊啊啊啊啊啊啊啊啊
-            back_creat(hi, dir + `amomo_${hi}.jpg`);
-            for (let i = 0; i <= 3; i++) {
-                await mergeImages(dir + `amomo_${hi}.jpg`, allmess);
-                if (i == 3) {
-                    status = true;
-                }
-            }
-            if (status == true) {
-                await session.send((0, jsx_runtime_1.jsx)("image", { url: (0, url_1.pathToFileURL)((0, path_2.resolve)(__dirname, '../../../' + 'output.jpg')) }));
             }
         }
+        if (process) {
+            for (let i = 0; i < rest.length; i++) {
+                if (koishi_1.h.parse(rest[i])[0].type == "text") {
+                    const proce_out = await process_baidu(rest[i]);
+                    if (proce_out == "不合规") {
+                        return violate_text;
+                    }
+                }
+            }
+        }
+        if (!arg1) {
+            return help_text;
+        }
+        //检测第一个参数就是旁白或老师对话的情况
+        let arr_newy = 0;
+        if (/a=/.test(rest[0])) {
+            arr_newy = 260 * A;
+            for (let i = 0; i < rest.length; i++) {
+                if (/a=/.test(rest[i])) {
+                    const regex = /a=(.*)/;
+                    const match = rest[i].match(regex)[1];
+                    if (match == '') {
+                        const tlength = getStringLength(koishi_1.h.parse(rest[i + 1])[0].attrs.content);
+                        let aa = (tlength / 36);
+                        aa = Math.round(aa);
+                        aa < 1 ? aa = 1 : aa = aa;
+                        arr_newy += ((170 * A) * aa) + (20 * A);
+                        i++;
+                    }
+                    else {
+                        const tlength = getStringLength(match);
+                        let aa = (tlength / 36);
+                        aa = Math.round(aa);
+                        aa < 1 ? aa = 1 : aa = aa;
+                        arr_newy += ((170 * A) * aa) + (20 * A);
+                    }
+                }
+                else {
+                }
+            }
+        }
+        if (/s=/.test(rest[0])) {
+            arr_newy = 260 * A;
+            for (let i = 0; i < rest.length; i++) {
+                if (/s=/.test(rest[i])) {
+                    const regex = /s=(.*)/;
+                    const match = rest[i].match(regex)[1];
+                    if (match == '') {
+                        const tlength = getStringLength(koishi_1.h.parse(rest[i + 1])[0].attrs.content);
+                        let aa = (tlength / 36);
+                        aa = Math.round(aa);
+                        aa < 1 ? aa = 1 : aa = aa;
+                        arr_newy += ((230 * A) * aa) + (20 * A);
+                        i++;
+                    }
+                    else {
+                        const tlength = getStringLength(match);
+                        let aa = (tlength / 36);
+                        aa = Math.round(aa);
+                        aa < 1 ? aa = 1 : aa = aa;
+                        arr_newy += ((230 * A) * aa) + (20 * A);
+                    }
+                }
+                else { }
+            }
+        }
+        const arg1s = await cal_arg1(arg1);
+        async function draw_ultra() {
+            let hi = 750 * A;
+            for (let i = 0; i < rest.length; i++) {
+                hi += hei_cal(koishi_1.h.parse(rest[i]));
+            }
+            optionss.favo ? hi += 400 * A : '';
+            arr_newy != 0 ? hi += 400 * A : '';
+            const canvas = await ctx.canvas.createCanvas(2600 * A, hi);
+            const c = canvas.getContext('2d');
+            const avadraw = await ctx.canvas.loadImage(await create_Avatar_creation(arg1s[1], arg1s[0]));
+            const backimg = await ctx.canvas.loadImage(await create_background(hi));
+            c.drawImage(backimg, 0, 0);
+            c.drawImage(avadraw, 100 * A, (100 * A) + arr_newy);
+            let y1 = 360 * A;
+            let arr_add = false;
+            let img_place = {
+                num: 0,
+                x_img: 0,
+                y_img: 0
+            };
+            const img_parr = [];
+            img_parr.push(img_place.num);
+            let arr_add_amend = false;
+            for (let i = 0; i < rest.length; i++) {
+                if (/s=/.test(rest[0])) {
+                    arr_add = false;
+                    arr_add_amend = true;
+                }
+                else if (arr_add_amend && /s=/.test(rest[i])) {
+                    arr_add_amend = true;
+                }
+                else {
+                    arr_add_amend = false;
+                }
+                if (arr_add && !/s=/.test(rest[i])) {
+                    console.log(114514);
+                    y1 += 30 * A;
+                    c.drawImage(avadraw, 100 * A, y1);
+                    y1 += 240 * A;
+                    arr_add = false;
+                }
+                if (koishi_1.h.parse(rest[i])[0].type == "img") {
+                    arr_newy == 0 ? 0 : y1 += (280 * A);
+                    arr_newy = 0;
+                    const image_bubb = await ctx.canvas.loadImage(await create_user_Image((type_ful(koishi_1.h.parse(rest[i])))));
+                    c.drawImage(image_bubb, 630 * A, y1);
+                    let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+                    y1 += (image_bubb[heis] + (20 * A));
+                }
+                else if (/s=/.test(rest[i])) {
+                    if (koishi_1.h.parse(rest[i])[0].type == "img") {
+                        const image_bubb = await ctx.canvas.loadImage(await create_user_Image((type_ful(koishi_1.h.parse(rest[i + 1])))));
+                        let wids = config.draw_modle == "canvas" ? 'width' : 'naturalWidth';
+                        c.drawImage(image_bubb, (2500 * A) - image_bubb[wids], y1);
+                        let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+                        y1 += (image_bubb[heis] + (20 * A));
+                        arr_add = true;
+                        i++;
+                    }
+                    else {
+                        const regex = /s=(.*)/;
+                        const match = rest[i].match(regex)[1];
+                        if (match == '') {
+                            //叽里咕噜
+                            const talk_bubb = await ctx.canvas.loadImage(await create_dialog_box((type_ful(koishi_1.h.parse(rest[i + 1]))), '#4a8aca'));
+                            let wids = config.draw_modle == "canvas" ? 'width' : 'naturalWidth';
+                            c.drawImage(talk_bubb, (2550 * A) - talk_bubb[wids], y1);
+                            let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+                            y1 += (talk_bubb[heis] + (20 * A));
+                            arr_add = true;
+                            i++;
+                        }
+                        else {
+                            const talk_bubb = await ctx.canvas.loadImage(await create_dialog_box(match, '#4a8aca'));
+                            let wids = config.draw_modle == "canvas" ? 'width' : 'naturalWidth';
+                            c.drawImage(talk_bubb, (2550 * A) - talk_bubb[wids], y1);
+                            let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+                            y1 += (talk_bubb[heis] + (20 * A));
+                            arr_add = true;
+                        }
+                    }
+                }
+                else if (/a=/.test(rest[i])) {
+                    const regex = /a=(.*)/;
+                    const match = rest[i].match(regex)[1];
+                    if (match == '') {
+                        const talk_bubb = await ctx.canvas.loadImage(await create_aside((type_ful(koishi_1.h.parse(rest[i + 1])))));
+                        let wids = config.draw_modle == "canvas" ? 'width' : 'naturalWidth';
+                        c.drawImage(talk_bubb, (1300 * A) - (talk_bubb[wids]) / 2, y1);
+                        let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+                        y1 += (talk_bubb[heis] + (20 * A));
+                        i++;
+                    }
+                    else {
+                        const talk_bubb = await ctx.canvas.loadImage(await create_aside(match));
+                        let wids = config.draw_modle == "canvas" ? 'width' : 'naturalWidth';
+                        c.drawImage(talk_bubb, (1300 * A) - (talk_bubb[wids]) / 2, y1);
+                        let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+                        y1 += (talk_bubb[heis] + (20 * A));
+                    }
+                }
+                else if (rest[i] == '=img') {
+                    arr_newy == 0 ? 0 : y1 += (280 * A);
+                    arr_newy = 0;
+                    let img_p = {
+                        num: img_parr[0] + 1,
+                        x_img: 630 * A,
+                        y_img: y1
+                    };
+                    img_parr[0] = img_parr[0] + 1;
+                    img_parr.push(img_p);
+                    y1 += ((800 * A) + (20 * A));
+                }
+                else {
+                    arr_newy == 0 ? 0 : y1 += (280 * A);
+                    arr_newy = 0;
+                    const talk_bubb = await ctx.canvas.loadImage(await create_dialog_box((type_ful(koishi_1.h.parse(rest[i]))), '#4c5b70'));
+                    c.drawImage(talk_bubb, 630 * A, y1);
+                    let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight';
+                    y1 += (talk_bubb[heis] + (20 * A));
+                }
+            }
+            if (optionss.favo) {
+                const favoimg = await ctx.canvas.loadImage(await create_favor_img(arg1s[0]));
+                y1 += 50 * A;
+                c.drawImage(favoimg, 630 * A, y1);
+            }
+            //=img占位法
+            console.log(img_parr);
+            let img_prom = [];
+            if (img_parr[0] > 0) {
+                session.send(`需要输入${img_parr[0]}张图片\n${session.event.platform == 'qq' ? '请@机器人后' : '请'}逐张发送图片`);
+                let erri = 0;
+                for (let i = 0; i < img_parr[0]; i++) {
+                    const mess = (koishi_1.h.parse(await session.prompt(60000)));
+                    if (mess[0].type == 'img') {
+                        img_prom.push(type_ful(mess));
+                        if ((img_parr[0] - i) == 1) {
+                            session.send(`输入完毕，图片渲染中~`);
+                        }
+                        else {
+                            session.send(`还需要输入${img_parr[0] - i - 1}张图片`);
+                        }
+                    }
+                    else if (mess[0].attrs.content == "退出" || erri >= 2) {
+                        return '已经终止创作';
+                    }
+                    else {
+                        session.send(`输入的不是图片，请重新输入\n${session.event.platform == 'qq' ? '@机器人并发送“退出”终止写文' : '发送“退出”终止写文'}`);
+                        erri++;
+                        i--;
+                    }
+                }
+                if (img_prom.length != img_parr[0])
+                    return '输入图片超时，请重新写作';
+                for (let i = 0; i < img_prom.length; i++) {
+                    y1 -= 700 * A;
+                }
+                for (let i = 0; i < img_prom.length; i++) {
+                    const image_bubb = await ctx.canvas.loadImage(await create_user_Image(img_prom[i]));
+                    c.drawImage(image_bubb, 630 * A, img_parr[i + 1].y_img);
+                    let heis = config.draw_modle ? 'height' : 'naturalHeight';
+                    y1 += (image_bubb[heis] + (20 * A));
+                }
+            }
+            const img = await canvas.toDataURL("image/png");
+            return img;
+        }
+        const img = await draw_ultra();
+        return koishi_1.h.image(img);
     });
 }
 exports.apply = apply;
