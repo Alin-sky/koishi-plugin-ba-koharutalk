@@ -9,7 +9,7 @@ import * as fs from 'fs'
 //koishi api versions 
 
 const schale_db_url = 'https://schale.gg/data/'
-const log1 = "ba-plugin-FMPS"
+const log1 = "khrtalk-FMPS"
 const logger: Logger = new Logger(log1)
 
 

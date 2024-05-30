@@ -4,6 +4,7 @@ import { } from '@koishijs/canvas';
 import { } from "@satorijs/adapter-qq";
 import { file_search, rootF } from './FMPS/FMPS_F';
 import { FMPS } from './FMPS/FMPS';
+import { pathToFileURL } from 'url';
 
 export const inject = { required: ['canvas'] }
 //export const using = ['canvas']
@@ -13,7 +14,7 @@ export const usage = `
 <span style="color: #FFD2ED;">koharu</span>-talk
 <div style="border:1px solid #CCC"></div> 
 
-<h6>0.3.0-aplha</h6>
+<h6>0.3.0-Beta</h6>
 <h6>日志出现报错可尝试重启插件</h6>
 <h6>指令没加载出来可尝试重启commands插件</h6>
 `
@@ -22,6 +23,7 @@ export interface Config {
   resolution: 0.25 | 0.5 | 1;
   draw_modle: "canvas" | "puppeteer"
   auto_update: boolean
+  help_model: boolean
   returns: string
   input_time: number
   process: {
@@ -32,7 +34,8 @@ export interface Config {
 }
 export const Config: Schema<Config> = Schema.object({
   auto_update: Schema.boolean().required().description('### 是否每次重启都下载资源'),
-  font: Schema.string().default('YouYuan').description('字体设置（beta）'),
+  help_model: Schema.boolean().default(true).description('是否开启图片使用说明'),
+  font: Schema.string().default('YouYuan').description('字体设置(beta)'),
   resolution: Schema.union([
     Schema.const(0.25).description('x 0.25'),
     Schema.const(0.5).description('x 0.5'),
@@ -42,7 +45,7 @@ export const Config: Schema<Config> = Schema.object({
     Schema.const('canvas').description('canvas'),
     Schema.const('puppeteer').description('puppeteer'),
   ]).description('选择渲染方法').role('radio').required(),
-  input_time: Schema.number().default(60000).description('等待输入时间'),
+  input_time: Schema.number().default(60000).description('等待图片输入时间'),
   returns: Schema.string().default('输入内容可能有问题(◎﹏◎)').description('不合规的回复内容'),
   process: Schema.object({
     id: Schema.string().description('APP ID'),
@@ -51,7 +54,7 @@ export const Config: Schema<Config> = Schema.object({
   }).description('百度审核(缺省则不启用)'),
 })
 
-export const json_file_name = 'sms_studata_main.json'
+export const json_file_name = 'sms_studata_main_talk.json'
 
 
 export async function apply(ctx: Context, config: Config) {
@@ -71,6 +74,8 @@ export async function apply(ctx: Context, config: Config) {
   const drawm = config.draw_modle == "canvas" ? "" : 'file://'
   const violate_text = config.returns
   const inp_time = config.input_time
+  const helpmod = config.help_model
+
   const color_di = '#FFEFF4'//全局背景色
   const log1 = "koharu-talk"
   const logger: Logger = new Logger(log1)
@@ -79,6 +84,17 @@ export async function apply(ctx: Context, config: Config) {
   const root = await rootF("mmt_img")
 
   var token = ''
+  //create smsdata_talk.json
+  async function create_json() {
+    await fmp.file_download('https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/json%2Fsms_studata_main.json', root, 'sms_studata_main.json')
+    await fmp.file_download('https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/json%2Fkhrtalk_satellite.json', root, 'khrtalk_satellite.json')
+    const smsdata = await fmp.json_parse(`${root}/sms_studata_main.json`)
+    const khrdata = await fmp.json_parse(`${root}/khrtalk_satellite.json`)
+    await fmp.json_create(root, json_file_name, [...smsdata, ...khrdata])
+  }
+
+  await create_json()
+
 
   //审核配置
   async function tokens() {
@@ -128,6 +144,33 @@ export async function apply(ctx: Context, config: Config) {
     return post.conclusion
   }
 
+  //抽样判断文件是否存在
+  async function file_random_survey() {
+    let plugin_ass
+    try {
+      const smsdata = await fmp.json_parse(`${root}/sms_studata_main.json`)
+      const khrdata = await fmp.json_parse(`${root}/khrtalk_satellite.json`)
+      plugin_ass = [...smsdata, ...khrdata]
+    } catch (e) {
+      logger.info(e)
+      return false
+    }
+    for (let i = 0; i < 20; i++) {
+      try {
+        const pluass = random.pick(plugin_ass, 20);
+        const fileChecks = pluass.map(async i => {
+          return await file_search(`${root}/${i['Id_db']}.png`);
+        });
+        const results = await Promise.all(fileChecks);
+        const status = results.every(result => result);
+        return status
+      } catch (e) {
+        logger.info(e)
+        return false
+      }
+    }
+  }
+
 
   async function initia() {
     logger.info("🟡 正在更新json文件")
@@ -135,7 +178,7 @@ export async function apply(ctx: Context, config: Config) {
     const jsonurl = "https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/json%2F"
     const newhash = await ctx.http.get(hashurl)
     const oldjson = await fmp.json_parse(root + "/hash.json")
-    if(!oldjson){
+    if (!oldjson) {
       await fmp.file_download(hashurl, root, 'hash.json')
     }
     function arraysEqual(a, b) {
@@ -190,19 +233,31 @@ export async function apply(ctx: Context, config: Config) {
     logger.info("🟢 json文件更新完毕")
   }
   async function init_download() {
-    logger.info('⬇️ 开始下载插件必须资源，请稍等哦（*＾-＾*）')
+    logger.info('⬇️ 开始下载插件必须资源，请稍等哦(*＾-＾*)')
     await fmp.file_download('https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/json%2Fsms_studata_main.json', root, 'sms_studata_main.json')
-    const jsondata = await fmp.json_parse(`${root}/${json_file_name}`)
+    const jsondata = await fmp.json_parse(`${root}//sms_studata_main.json`)
+    const stardata = await fmp.json_parse(`${root}/khrtalk_satellite.json`)
     try {
       const stulen = jsondata.length
       for (let i = 0; i < stulen; i++) {
-        await fmp.file_download(`${cos1}stu_icon_db_png/${jsondata[i].Id_db}.png`, await root, jsondata[i].Id_db + '.png')
+        await fmp.file_download(`${cos1}stu_icon_db_png/${jsondata[i].Id_db}.png`, root, jsondata[i].Id_db + '.png')
         const num = Math.round((i / stulen) * 100)
         if (num == 25 || num == 50 || num == 75 || num == 95) {
           logger.info('下载进度' + num + '%')
         }
       }
+      logger.info('✔️（1/2）学生头像下载完毕')
+      const starlen = stardata.length
+      for (let i = 0; i < starlen; i++) {
+        await fmp.file_download(`${cos1}mmt_stuimg/${stardata[i].Id_db}.png`, root, stardata[i].Id_db + '.png')
+        const num = Math.round((i / starlen) * 100)
+        if (num == 25 || num == 50 || num == 75 || num == 95) {
+          logger.info('下载进度' + num + '%')
+        }
+      }
+      logger.info('✔️（2/2）卫星学生头像下载完毕')
       await fmp.file_download(`${cos1}img_file/khrtalk_favor.png`, root, 'khrtalk_favor.png')
+      await fmp.file_download(`${cos1}img_file/talk_helptext.jpg`, root, 'talk_helptext.jpg')
       logger.info('✔️ khr-talk资源文件下载完毕')
     } catch (e) {
       logger.error('出现错误' + e)
@@ -210,18 +265,13 @@ export async function apply(ctx: Context, config: Config) {
     }
   }
 
-
+  if (!await file_random_survey()) {
+    logger.info("随机资源检测未通过😿😿")
+    await initia()
+    await init_download()
+  }
   await initia()
   //await init_download()
-
-  try {
-    ctx.setInterval(async () => await initia(), 3 * 60 * 60 * 1000)
-  } catch (e) {
-    logger.info(e)
-  }
-
-
-
 
   //背景函数
   async function create_background(hi: number) {
@@ -350,7 +400,6 @@ export async function apply(ctx: Context, config: Config) {
     return canvas.toDataURL("image/png")
   }
 
-
   //旁白创建函数
   async function create_aside(text) {
     const fontSize = 85 * A;
@@ -453,7 +502,6 @@ export async function apply(ctx: Context, config: Config) {
     }
   }
 
-
   function getStringLength(str) {
     let length = 0;
     for (let i = 0; i < str.length; i++) {
@@ -492,12 +540,11 @@ export async function apply(ctx: Context, config: Config) {
     }
     return yout
   }
-  // .usage('第一个参数是头像，可@群u，或传入学生名\n[...rest]后继参数传入图片或者文字\n使用空格分隔参数')
-  //.example('talk 小春 呜呜呜 老师')
 
 
   ctx.command('talk <arg1> [...rest]', '生成momotalk对话')
-    .option('nikc name', '-n [beta]')
+    .option('nikc_name', '-n [beta]')
+    .example('talk 小春 呜呜呜 老师')
     .option("favo", "-f")
     .action(async ({ session, options }, arg1, ...rest) => {
       let help_pla = []
@@ -514,7 +561,7 @@ export async function apply(ctx: Context, config: Config) {
       } else {
         help_pla[0] = '和昵称'
         help_pla[1] = ''
-        help_pla[2] = '▪️当@群成员时，会使用该群成员的头像和昵称（beta）'
+        help_pla[2] = '▪️当@群成员时，会使用该群成员的头像和昵称(beta)'
         help_pla[3] = `  
 🟢5.使用指令触发者的头像和昵称
       ${help_pla[1]}talk =me 啊哈哈`
@@ -529,7 +576,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
 ◻️参数介绍：
 ◽[对话对象]：
     ▪️需输入学生名
-    ▪️当输入 me= 时，会使用指令调用者的头像${help_pla[0]}
+    ▪️当输入 =me 时，会使用指令调用者的头像${help_pla[0]}
     ${help_pla[2]}
 ◽[正文]：
     ▪️对话内容，使用空格来分隔，每个正文会生成对话气泡
@@ -555,7 +602,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
       ${help_pla[1]}talk 柚子 =img 老师，这么快就要用我送您的劵吗 s=打大蛇能全暴击吗
       ▪️“=img”的位置会预留一个图片，后继需要根据引导发送图片
       ${help_pla[4]}
-      反馈：2609631906@qq.com
+      反馈：2609631906@QQ.COM 
     `
 
       const json_data = await fmp.json_parse(`${root}/${json_file_name}`)
@@ -581,7 +628,11 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
         let avaimg_url = ''
         let output = []
         if (!arg1) {
-          return help_text
+          if (helpmod) {
+            return h.image(root + "talk_helptext.jpg")
+          } else {
+            return help_text
+          }
         } else {
           try {
             if (h.parse(arg1)[0].type == "text") {
@@ -595,7 +646,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
                 avaimg_url = h.parse(arg1)[1].attrs.src
                 return [...stuname, avaimg_url]
               }
-              if (arg1 == 'me=') {
+              if (arg1 == '=me') {
                 if (session.event.platform == 'qq') {
                   const arrurl = `https://q.qlogo.cn/qqapp/${session.bot.config.id}/${session.event.user?.id}/640`
                   const get = await ctx.http.get(arrurl)
@@ -632,7 +683,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
               } else {
                 try {
                   stuname = await MatchStudentName(arg1)
-                  console.log('sanae_match:' + json_data.find(i => i.Id == stuname[0])?.Name_zh_ft)
+                  console.log('sanae_match:' + stuname)
                 } catch (e) {
                   stuname.push((await random.pick(json_data))['Id'])
                 }
@@ -649,7 +700,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
                     let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
                     stuname[0] = json_data.find(i => i.Id == stuname[0])?.Name_zh_ft;
                     avaimg_url = `${drawm}${root}/${stuid}.png`
-                    return [...stuname, avaimg_url]
+                    return [stuname[0], avaimg_url]
                   }
                 }
               }
@@ -690,7 +741,11 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
       }
 
       if (!arg1) {
-        return help_text
+        if (helpmod) {
+          return h.image(pathToFileURL(root + "\\talk_helptext.jpg").href)
+        } else {
+          return help_text
+        }
       }
       //检测第一个参数就是旁白或老师对话的情况
       let arr_newy: number = 0
@@ -744,6 +799,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
         }
       }
       const arg1s = await cal_arg1(arg1)
+      console.log(arg1s)
       async function draw_ultra() {
         let hi = 750 * A
         for (let i = 0; i < rest.length; i++) {
@@ -877,7 +933,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
           session.send(`需要输入${img_parr[0]}张图片\n${session.event.platform == 'qq' ? '请@机器人后' : '请'}逐张发送图片`)
           let erri = 0
           for (let i = 0; i < img_parr[0]; i++) {
-            const mess = (h.parse(await session.prompt(60000)))
+            const mess = (h.parse(await session.prompt(inp_time)))
             if (mess[0].type == 'img') {
               img_prom.push(type_ful(mess))
               if ((img_parr[0] - i) == 1) {
