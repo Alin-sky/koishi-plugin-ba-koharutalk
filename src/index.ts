@@ -543,7 +543,7 @@ export async function apply(ctx: Context, config: Config) {
 
 
   ctx.command('talk <arg1> [...rest]', '生成momotalk对话')
-    .option('nikc_name', '-n [beta]')
+    .option('name', '-n [beta]')
     .example('talk 小春 呜呜呜 老师')
     .option("favo", "-f")
     .action(async ({ session, options }, arg1, ...rest) => {
@@ -604,29 +604,29 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
       ${help_pla[4]}
       反馈：2609631906@QQ.COM 
     `
-
       const json_data = await fmp.json_parse(`${root}/${json_file_name}`)
       interface option {
         nick: any
         favo: boolean
       }
       const optionss: option = {
-        nick: options['nikc name'],
+        nick: options.name,
         favo: options.favo
       }
       console.log(optionss)
       logger.info(rest)
       //能跑就行，比0.2还乱
       if (process) {
-        const proce_out = await process_baidu(arg1)
-        if (proce_out == "不合规") {
-          return violate_text
+        if (optionss.nick) {
+          const proce_out = await process_baidu(optionss.nick);
+          if (proce_out == "不合规") {
+            return violate_text;
+          }
         }
       }
       async function cal_arg1(arg1) {
         let stuname = []
         let avaimg_url = ''
-        let output = []
         if (!arg1) {
           if (helpmod) {
             return h.image(root + "talk_helptext.jpg")
@@ -729,20 +729,25 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
           }
         }
       }
+
       if (process) {
+        let arry = ''
         for (let i = 0; i < rest.length; i++) {
           if (h.parse(rest[i])[0].type == "text") {
-            const proce_out = await process_baidu(rest[i])
-            if (proce_out == "不合规") {
-              return violate_text
-            }
+            arry += rest[i]
+          }
+        }
+        if (!(arry == '')) {
+          const proce_out = await process_baidu(arry);
+          if (proce_out == "不合规") {
+            return violate_text;
           }
         }
       }
 
       if (!arg1) {
         if (helpmod) {
-          return h.image(pathToFileURL(root + "\\talk_helptext.jpg").href)
+          return h.image(pathToFileURL(root + "/talk_helptext.jpg").href)
         } else {
           return help_text
         }
@@ -840,7 +845,6 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
             arr_add_amend = false
           }
           if (arr_add && !/s=/.test(rest[i])) {
-            console.log(114514)
             y1 += 30 * A
             c.drawImage(avadraw, 100 * A, y1)
             y1 += 240 * A
