@@ -29,4 +29,11 @@ export declare class FMPS {
      * @param file 文件名称，缺省时将删除文件夹内全部内容
      */
     file_delete(dirPath: string, file?: string): Promise<void>;
+    /**
+     * 图片保存函数
+     * @param dirPath 完整的文件存放的路径
+     * @param fname 带拓展名的文件名
+     * @param b64 图片的 Base64 编码字符串，包括前缀
+     */
+    img_save(dirPath: string, fname: string, b64: string): Promise<void>;
 }

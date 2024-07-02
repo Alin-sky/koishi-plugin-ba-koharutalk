@@ -14,9 +14,11 @@ export const usage = `
 <span style="color: #FFD2ED;">koharu</span>-talk
 <div style="border:1px solid #CCC"></div> 
 
-<h6>0.3.0-Beta</h6>
+<h6>0.3.0-rc</h6>
 <h6>日志出现报错可尝试重启插件</h6>
 <h6>指令没加载出来可尝试重启commands插件</h6>
+
+<div style="border:1px solid #CCC"></div> 
 `
 export interface Config {
   font: string
@@ -24,17 +26,21 @@ export interface Config {
   draw_modle: "canvas" | "puppeteer"
   auto_update: boolean
   help_model: boolean
-  returns: string
+  save_img: boolean
   input_time: number
-  process: {
+  inte: {
+    returns: string
+    type: '百度审核' | '自定义审核'
     id?: string
     APIKey?: string
     SKey?: string
+    urls?: string
   }
 }
 export const Config: Schema<Config> = Schema.object({
   auto_update: Schema.boolean().required().description('### 是否每次重启都下载资源'),
-  help_model: Schema.boolean().default(true).description('是否开启图片使用说明'),
+  help_model: Schema.boolean().default(true).description('是否使用图片的使用说明'),
+  save_img: Schema.boolean().default(true).description('是否本地保存输出的图片'),
   font: Schema.string().default('YouYuan').description('字体设置(beta)'),
   resolution: Schema.union([
     Schema.const(0.25).description('x 0.25'),
@@ -46,17 +52,30 @@ export const Config: Schema<Config> = Schema.object({
     Schema.const('puppeteer').description('puppeteer'),
   ]).description('选择渲染方法').role('radio').required(),
   input_time: Schema.number().default(60000).description('等待图片输入时间'),
-  returns: Schema.string().default('输入内容可能有问题(◎﹏◎)').description('不合规的回复内容'),
-  process: Schema.object({
-    id: Schema.string().description('APP ID'),
-    APIKey: Schema.string().description('API Key').role('secret'),
-    SKey: Schema.string().description('Secret Key').role('secret')
-  }).description('百度审核(缺省则不启用)'),
+
+  inte: Schema.intersect([
+    Schema.object({
+      returns: Schema.string().default('输入内容可能有问题(◎﹏◎)').description('不合规的回复内容'),
+      type: Schema.union(['百度审核', '自定义审核']).required(),
+    }).description('输入文本审核配置'),
+    Schema.union([
+      Schema.object({
+        type: Schema.const('百度审核').required(),
+        id: Schema.string().description('APP ID'),
+        APIKey: Schema.string().description('API Key').role('secret'),
+        SKey: Schema.string().description('Secret Key').role('secret')
+
+      }).description('百度审核'),
+      Schema.object({
+        type: Schema.const('自定义审核').required(),
+        urls: Schema.string().description('自定义审核，还没适配'),
+      }).description('自定义审核'),
+    ]),
+  ])
 })
 
+
 export const json_file_name = 'sms_studata_main_talk.json'
-
-
 export async function apply(ctx: Context, config: Config) {
   //字体读取
   const fonts = config.font
@@ -67,14 +86,14 @@ export async function apply(ctx: Context, config: Config) {
   const baidu_token_url = 'https://aip.baidubce.com/oauth/2.0/token'
   const cos1 = 'https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/'
   const qqavaurl = 'https://api.qqsuu.cn/api/dm-qt?qq='
-
-  const id = config.process.id
-  const apikey = config.process.APIKey
-  const skey = config.process.SKey
+  const id = config.inte.id
+  const apikey = config.inte.APIKey
+  const skey = config.inte.SKey
   const drawm = config.draw_modle == "canvas" ? "" : 'file://'
-  const violate_text = config.returns
+  const violate_text = config.inte.returns
   const inp_time = config.input_time
   const helpmod = config.help_model
+  const costurl = config.inte.urls
 
   const color_di = '#FFEFF4'//全局背景色
   const log1 = "koharu-talk"
@@ -82,6 +101,7 @@ export async function apply(ctx: Context, config: Config) {
   const fmp = new FMPS(ctx)
   const random = new Random(() => Math.random())
   const root = await rootF("mmt_img")
+  const saveimg = await rootF("mmt_img", "output_save")
 
   var token = ''
   //create smsdata_talk.json
@@ -94,7 +114,6 @@ export async function apply(ctx: Context, config: Config) {
   }
 
   await create_json()
-
 
   //审核配置
   async function tokens() {
@@ -110,18 +129,22 @@ export async function apply(ctx: Context, config: Config) {
       return false
     }
   }
-  let process: boolean = false
+  let process: number = 0
   if (apikey == null || skey == null || id == null) {
-    logger.info('⛔ 审核配置填写不完整，已停用')
-    process = false
+    logger.info('⛔ 百度审核配置填写不完整，已停用')
+    process = 0
+    if (config.inte.urls) {
+      process = 2
+    }
   } else {
     if (await tokens() == false) {
-      logger.info('⛔ 审核配置填写可能有误，已停用')
+      logger.info('⛔ 百度审核配置填写可能有误，已停用')
     } else {
       logger.info('🟢 已启用百度审核')
-      process = true
+      process = 1
     }
   }
+  console.log(process)
 
   async function process_baidu(text: string): Promise<string> {
     const accessToken = token
@@ -142,6 +165,12 @@ export async function apply(ctx: Context, config: Config) {
       logger.info(post)
     }
     return post.conclusion
+  }
+
+
+  async function process_cut(texts: string) {
+    const output = await ctx.http.get('http://127.0.0.1:18000/shenhe?word=' + texts)
+    return output
   }
 
   //抽样判断文件是否存在
@@ -171,7 +200,6 @@ export async function apply(ctx: Context, config: Config) {
     }
   }
 
-
   async function initia() {
     logger.info("🟡 正在更新json文件")
     const hashurl = 'https://1145141919810-1317895529.cos.ap-chengdu.myqcloud.com/hash.json'
@@ -197,7 +225,6 @@ export async function apply(ctx: Context, config: Config) {
       if (!await file_search(`${root}/${(stu_data[stu_data.length - 1] as { Id_db: any }).Id_db}.png`)) {
         await init_download()
       }
-
     } else {
       logger.info("☁️   🟢云hash未更新");
       //二次检测
@@ -207,7 +234,6 @@ export async function apply(ctx: Context, config: Config) {
           await fmp.file_download((`${jsonurl}${newhash[i].fname}`), root, `${newhash[i].fname}`)
         }
       }
-
       if (config.auto_update) {
         logger.info("🟡本地资源随机更新");
         await init_download()
@@ -557,7 +583,7 @@ export async function apply(ctx: Context, config: Config) {
       ${help_pla[1]}talk =me 啊哈哈 -n 夏莱老师`
         help_pla[4] =
           `🟨注意
--目前手机端的qq不能很好的发送图文消息，=img功能需要@机器人并在消息内包含图片`
+-目前手机端的qq需要9.0.65以上版本才能发送图文消息，=img功能需要@机器人并在消息内包含图片`
       } else {
         help_pla[0] = '和昵称'
         help_pla[1] = ''
@@ -577,11 +603,13 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
 ◽[对话对象]：
     ▪️需输入学生名
     ▪️当输入 =me 时，会使用指令调用者的头像${help_pla[0]}
+    ▪️当匹配不到角色会随机抽取
     ${help_pla[2]}
 ◽[正文]：
     ▪️对话内容，使用空格来分隔，每个正文会生成对话气泡
     ▪️当正文内容为 s=[文本] 时，会生成老师的消息气泡
     ▪️当正文内容为 a=[文本] 时，会生成旁白的气泡
+    ▪️当正文内容为 stu=[文本] 时，会切换对话的角色
     ▪️当正文内容为 =img 时，会在这个=img的位置占位一张图片
 ◽[选项]
     ▪️-f 当带有“-f”选项时，会在对话尾部生成进入羁绊剧情的气泡
@@ -597,11 +625,15 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
 🟢4.自定义昵称
       ${help_pla[1]}talk 小春 呜呜呜呜 怎么还是不及格... -n 小笨春${help_pla[3]}
 🟢6.进入羁绊剧情
-      ${help_pla[1]}talk 若藻 呼呼呼呼 老师 你逃不掉的❤ -f
+      ${help_pla[1]}talk -f 若藻 呼呼呼呼 老师 你逃不掉的❤ 
+      ▪️“-f”选项需要放在指令“talk”后面，并用空格分隔
 🟢7.输入图片
       ${help_pla[1]}talk 柚子 =img 老师，这么快就要用我送您的劵吗 s=打大蛇能全暴击吗
       ▪️“=img”的位置会预留一个图片，后继需要根据引导发送图片
       ${help_pla[4]}
+🟢8.切换对话对象
+      ${help_pla[1]}talk 小绿 能陪我去买点东西吗 老师❤ s=好...好的 stu=小桃 老师怎么还不来打游戏 小绿怎么也不在 苦呀西~！  
+      ▪️“stu=[角色]” 会切换默认对话的角色
       反馈：2609631906@QQ.COM 
     `
       const json_data = await fmp.json_parse(`${root}/${json_file_name}`)
@@ -614,12 +646,19 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
         favo: options.favo
       }
       console.log(optionss)
-      logger.info(rest)
+      logger.info('arg1:' + arg1, rest)
       //能跑就行，比0.2还乱
-      if (process) {
+      if (process == 1) {
         if (optionss.nick) {
           const proce_out = await process_baidu(optionss.nick);
           if (proce_out == "不合规") {
+            return violate_text;
+          }
+        }
+      } else if (process == 2) {
+        if (optionss.nick) {
+          const proce_out = await process_cut(optionss.nick);
+          if (!proce_out.status) {
             return violate_text;
           }
         }
@@ -730,7 +769,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
         }
       }
 
-      if (process) {
+      if (process == 1) {
         let arry = ''
         for (let i = 0; i < rest.length; i++) {
           if (h.parse(rest[i])[0].type == "text") {
@@ -740,6 +779,19 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
         if (!(arry == '')) {
           const proce_out = await process_baidu(arry);
           if (proce_out == "不合规") {
+            return violate_text;
+          }
+        }
+      } else if (process == 2) {
+        let arry = ''
+        for (let i = 0; i < rest.length; i++) {
+          if (h.parse(rest[i])[0].type == "text") {
+            arry += rest[i]
+          }
+        }
+        if (!(arry == '')) {
+          const proce_out = await process_cut(arry);
+          if (!proce_out) {
             return violate_text;
           }
         }
@@ -803,7 +855,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
 
         }
       }
-      const arg1s = await cal_arg1(arg1)
+      let arg1s = await cal_arg1(arg1)
       console.log(arg1s)
       async function draw_ultra() {
         let hi = 750 * A
@@ -814,7 +866,7 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
         arr_newy != 0 ? hi += 400 * A : ''
         const canvas = await ctx.canvas.createCanvas(2600 * A, hi);
         const c = canvas.getContext('2d');
-        const avadraw = await ctx.canvas.loadImage(await create_Avatar_creation(arg1s[1], arg1s[0]))
+        let avadraw = await ctx.canvas.loadImage(await create_Avatar_creation(arg1s[1], arg1s[0]))
         const backimg = await ctx.canvas.loadImage(await create_background(hi))
         c.drawImage(backimg, 0, 0)
         c.drawImage(avadraw, 100 * A, (100 * A) + arr_newy)
@@ -836,20 +888,30 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
 
         let arr_add_amend = false
         for (let i = 0; i < rest.length; i++) {
+
+
           if (/s=/.test(rest[0])) {
             arr_add = false
             arr_add_amend = true
           } else if (arr_add_amend && /s=/.test(rest[i])) {
-            arr_add_amend = true
+            if (/a=/.test(rest[i + 1])) {
+              arr_add_amend = false
+              arr_add = false
+            } else {
+              arr_add = true
+              arr_add_amend = true
+            }
           } else {
             arr_add_amend = false
           }
-          if (arr_add && !/s=/.test(rest[i])) {
+
+          if (arr_add && !/s=/.test(rest[i]) && !(/a=/.test(rest[i])) && !(/stu=/.test(rest[i]))) {
             y1 += 30 * A
             c.drawImage(avadraw, 100 * A, y1)
             y1 += 240 * A
             arr_add = false
           }
+
           if (h.parse(rest[i])[0].type == "img") {
             arr_newy == 0 ? 0 : y1 += (280 * A)
             arr_newy = 0
@@ -915,6 +977,32 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
             img_parr[0] = img_parr[0] + 1
             img_parr.push(img_p)
             y1 += ((800 * A) + (20 * A))
+          } else if (/stu=/.test(rest[i])) {
+            const regex = /stu=(.*)/;
+            const match = rest[i].match(regex)[1]
+            //console.log(match)
+            let stuname = []
+            let avaimg_urls
+            try {
+              stuname = await MatchStudentName(match)
+              console.log('sanae_match:' + stuname)
+            } catch (e) {
+              logger.info(e)
+              //stuname.push((await random.pick(json_data))['Id'])
+              stuname[0] = 0
+            }
+            if (stuname[0] == 0 || stuname.length == 0) {
+              stuname[0] = arg1s[0]
+              avaimg_urls = arg1s[1]
+              arr_add = false
+            } else {
+              let stuid = json_data.find(i => i.Id == stuname[0])?.Id_db;
+              stuname[0] = json_data.find(i => i.Id == stuname[0])?.Name_zh_ft;
+              avaimg_urls = `${drawm}${root}/${stuid}.png`
+              arr_add = true
+            }
+            avadraw = await ctx.canvas.loadImage(await create_Avatar_creation(avaimg_urls, stuname[0]))
+            //y1 += 270 * A
           } else {
             arr_newy == 0 ? 0 : y1 += (280 * A)
             arr_newy = 0
@@ -922,8 +1010,8 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
             c.drawImage(talk_bubb, 630 * A, y1)
             let heis = config.draw_modle == "canvas" ? 'height' : 'naturalHeight'
             y1 += (talk_bubb[heis] + (20 * A))
-
           }
+
         }
         if (optionss.favo) {
           const favoimg = await ctx.canvas.loadImage(await create_favor_img(arg1s[0]))
@@ -967,7 +1055,11 @@ talk [对话对象] [正文1 正文2 正文3...] [选项]
         const img = await canvas.toDataURL("image/png")
         return img
       }
+
       const img = await draw_ultra()
+      if (config.save_img) {
+        await fmp.img_save(saveimg, `${session.event.user?.id}_${random.int(0, 9999999)}.png`, img)
+      }
       return h.image(img)
     })
 }

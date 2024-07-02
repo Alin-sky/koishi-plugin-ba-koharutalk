@@ -125,6 +125,31 @@ export class FMPS {
     }
 
 
+    /**
+     * 图片保存函数
+     * @param dirPath 完整的文件存放的路径
+     * @param fname 带拓展名的文件名
+     * @param b64 图片的 Base64 编码字符串，包括前缀
+     */
+    async img_save(dirPath: string, fname: string, b64: string): Promise<void> {
+        try {
+            // 移除 Base64 前缀
+            const base64Data = b64.split(';base64,').pop();
+            if (!base64Data) {
+                throw new Error('Invalid Base64 data');
+            }
+            // 解码 Base64 字符串
+            const buffer = Buffer.from(base64Data, 'base64');
+            const fullPath = path.join(dirPath, fname);
+            // 确保目录存在
+            await fs.promises.mkdir(dirPath, { recursive: true });
+            // 将Buffer写入文件
+            await fs.promises.writeFile(fullPath, buffer);
+        } catch (error) {
+            console.error(`保存图片时出错: ${error.message}`);
+        }
+    }
+
 
 
 }

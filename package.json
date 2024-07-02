@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-ba-koharu-talk",
   "description": "通过bot来生成类似碧蓝档案momotalk的对话图",
-  "version": "0.3.0-beta.3",
+  "version": "0.3.0-rc.2",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
